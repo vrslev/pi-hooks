@@ -185,36 +185,26 @@ async function restoreCheckpoint(
   checkpoint: CheckpointData,
 ): Promise<void> {
   const root = await getRepoRoot(cwd);
-  console.error(`[checkpoint] Restoring checkpoint ${checkpoint.id}`);
-  console.error(`[checkpoint] HEAD: ${checkpoint.headSha}`);
-  console.error(`[checkpoint] Worktree: ${checkpoint.worktreeTreeSha}`);
-  console.error(`[checkpoint] Index: ${checkpoint.indexTreeSha}`);
 
   if (checkpoint.headSha === ZEROS) {
     throw new Error("Cannot restore: checkpoint was saved with no commits");
   }
 
   // 1. Reset HEAD to saved commit
-  console.error(`[checkpoint] Step 1: git reset --hard ${checkpoint.headSha}`);
   await execAsync(`git reset --hard ${checkpoint.headSha}`, { cwd: root });
 
   // 2. Update index to match worktree tree (without -u, doesn't touch files yet)
-  console.error(`[checkpoint] Step 2: git read-tree --reset ${checkpoint.worktreeTreeSha}`);
   await execAsync(`git read-tree --reset ${checkpoint.worktreeTreeSha}`, {
     cwd: root,
   });
 
   // 3. Checkout files from index (overwrites existing, but doesn't delete extras)
-  console.error(`[checkpoint] Step 3: git checkout-index -a -f`);
   await execAsync(`git checkout-index -a -f`, { cwd: root });
 
   // 4. Restore index to staged state
-  console.error(`[checkpoint] Step 4: git read-tree --reset ${checkpoint.indexTreeSha}`);
   await execAsync(`git read-tree --reset ${checkpoint.indexTreeSha}`, {
     cwd: root,
   });
-  
-  console.error(`[checkpoint] Restore complete`);
 }
 
 async function loadCheckpointFromRef(
@@ -338,9 +328,6 @@ export default function (pi: HookAPI) {
         }
       }
     }
-    console.error(
-      `[checkpoint] Loaded ${loaded} checkpoints for session ${sessionId}`,
-    );
   }
 
   async function getSessionIdFromFile(sessionFile: string): Promise<string> {
@@ -357,23 +344,14 @@ export default function (pi: HookAPI) {
 
   pi.on("session_start", async (event, ctx) => {
     gitAvailable = await isGitRepo(ctx.cwd);
-    if (!gitAvailable) {
-      console.error("[checkpoint] Not a git repo");
-      return;
-    }
+    if (!gitAvailable) return;
 
     if (ctx.sessionFile) {
       currentSessionFile = ctx.sessionFile;
       currentSessionId = await getSessionIdFromFile(ctx.sessionFile);
-      console.error(`[checkpoint] Session ID: ${currentSessionId}`);
       if (currentSessionId) {
         await loadCheckpointsForSession(ctx.cwd, currentSessionId);
-        console.error(
-          `[checkpoint] Loaded ${completedCheckpoints.length} checkpoints`,
-        );
       }
-    } else {
-      console.error("[checkpoint] No session file");
     }
   });
 
@@ -383,14 +361,8 @@ export default function (pi: HookAPI) {
     // Try to get session ID if not available yet (new session)
     if (!currentSessionId && currentSessionFile) {
       currentSessionId = await getSessionIdFromFile(currentSessionFile);
-      console.error(
-        `[checkpoint] Got session ID on turn_start: ${currentSessionId}`,
-      );
     }
-    if (!currentSessionId) {
-      console.error("[checkpoint] No session ID, skipping checkpoint");
-      return;
-    }
+    if (!currentSessionId) return;
 
     // Fire and forget - don't block the turn
     const checkpointPromise = (async (): Promise<CheckpointData | null> => {
@@ -404,7 +376,6 @@ export default function (pi: HookAPI) {
         );
 
         completedCheckpoints.push(data);
-        console.error(`[checkpoint] Created checkpoint: ${id}`);
 
         // Prune old checkpoints periodically
         if (Math.random() < 0.1) {
@@ -412,9 +383,7 @@ export default function (pi: HookAPI) {
         }
 
         return data;
-      } catch (err) {
-        // Log error for debugging, disable future attempts
-        console.error("[checkpoint] Failed to create checkpoint:", err);
+      } catch {
         checkpointingFailed = true;
         return null;
       }
@@ -424,25 +393,16 @@ export default function (pi: HookAPI) {
   });
 
   pi.on("branch", async (event, ctx) => {
-    console.error(
-      `[checkpoint] Branch event fired, gitAvailable=${gitAvailable}`,
-    );
     if (!gitAvailable) return undefined;
 
     // Wait for pending checkpoints
     await Promise.all(pendingCheckpoints);
-    console.error(
-      `[checkpoint] Pending checkpoints resolved, total=${completedCheckpoints.length}`,
-    );
 
     // Get sessionId from entries header (this is the session we're branching FROM)
     const header = event.entries.find((e) => e.type === "session") as
       | { type: "session"; id: string }
       | undefined;
     const entriesSessionId = header?.id;
-    console.error(
-      `[checkpoint] Entries sessionId=${entriesSessionId}, current=${currentSessionId}`,
-    );
 
     // Load checkpoints for the entries session (if different from current)
     if (entriesSessionId && entriesSessionId !== currentSessionId) {
@@ -454,25 +414,17 @@ export default function (pi: HookAPI) {
     const allCheckpoints = [...completedCheckpoints].sort(
       (a, b) => b.timestamp - a.timestamp,
     );
-    
+
     if (allCheckpoints.length === 0) {
       ctx.ui.notify("No checkpoints available", "warning");
       return undefined;
     }
 
     // Find the target entry's timestamp to match checkpoint
-    // targetTurnIndex appears to be entry index in the entries array
     const targetEntry = event.entries[event.targetTurnIndex];
     const targetTimestamp = targetEntry?.timestamp
       ? new Date(targetEntry.timestamp).getTime()
       : Date.now();
-
-    console.error(
-      `[checkpoint] Target entry index: ${event.targetTurnIndex}, timestamp: ${targetTimestamp}`,
-    );
-    console.error(
-      `[checkpoint] All checkpoints: ${allCheckpoints.map((c) => `${c.turnIndex}@${c.timestamp}`).join(", ")}`,
-    );
 
     // Find checkpoint with timestamp closest to AND >= target entry timestamp
     // Checkpoint is created at turn_start (BEFORE processing), so we want the one
@@ -480,10 +432,6 @@ export default function (pi: HookAPI) {
     const checkpointsAtOrAfterTarget = allCheckpoints
       .filter((cp) => cp.timestamp >= targetTimestamp)
       .sort((a, b) => a.timestamp - b.timestamp); // Sort ascending to get closest
-
-    console.error(
-      `[checkpoint] Checkpoints at/after target: ${checkpointsAtOrAfterTarget.length}`,
-    );
 
     if (checkpointsAtOrAfterTarget.length === 0) {
       ctx.ui.notify("No checkpoint found for this message", "warning");
@@ -495,10 +443,6 @@ export default function (pi: HookAPI) {
 
     const latestCheckpoint = allCheckpoints[0];
     const hasOlderCheckpoints = allCheckpoints.length > 1;
-
-    console.error(
-      `[checkpoint] Selected checkpoint: ${checkpoint.id} (timestamp: ${checkpoint.timestamp})`,
-    );
 
     // Build options
     const options = [
@@ -514,17 +458,14 @@ export default function (pi: HookAPI) {
     options.push("Cancel");
 
     const choice = await ctx.ui.select("Restore code state?", options);
-    console.error(`[checkpoint] User choice: ${choice}`);
 
     if (!choice || choice === "Cancel") {
-      console.error(`[checkpoint] User cancelled or no choice`);
       return { skipConversationRestore: true };
     }
 
     if (choice.startsWith("Restore oldest")) {
       try {
-        const oldestCheckpoint =
-          allCheckpoints[allCheckpoints.length - 1];
+        const oldestCheckpoint = allCheckpoints[allCheckpoints.length - 1];
         await restoreCheckpoint(ctx.cwd, oldestCheckpoint);
         ctx.ui.notify("Restored to oldest checkpoint", "info");
       } catch (error) {
