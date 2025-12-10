@@ -22,7 +22,7 @@ import type { Diagnostic } from "vscode-languageserver-types";
 // Configuration
 // ============================================================================
 
-const DIAGNOSTICS_WAIT_MS = 2000; // Short wait for quick diagnostics
+const DIAGNOSTICS_WAIT_MS = 3000; // Wait for LSP diagnostics
 const INIT_TIMEOUT_MS = 30000;
 
 // ============================================================================
@@ -517,6 +517,34 @@ export default function (pi: HookAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     lspManager = new LSPManager(ctx.cwd);
+    
+    // Pre-warm LSP by finding project roots and initializing clients
+    // This makes first edit faster
+    const warmupFiles = [
+      "pubspec.yaml",      // Dart/Flutter
+      "package.json",      // JS/TS
+      "pyproject.toml",    // Python
+      "go.mod",            // Go
+      "Cargo.toml",        // Rust
+    ];
+    
+    for (const marker of warmupFiles) {
+      const markerPath = path.join(ctx.cwd, marker);
+      if (fs.existsSync(markerPath)) {
+        // Find a source file to trigger LSP init
+        const ext = marker === "pubspec.yaml" ? ".dart" 
+          : marker === "package.json" ? ".ts"
+          : marker === "pyproject.toml" ? ".py"
+          : marker === "go.mod" ? ".go"
+          : marker === "Cargo.toml" ? ".rs"
+          : null;
+        if (ext) {
+          // Just get clients to trigger initialization (don't wait for diagnostics)
+          lspManager.getClientsForFile(path.join(ctx.cwd, `dummy${ext}`)).catch(() => {});
+        }
+        break;
+      }
+    }
   });
 
   pi.on("tool_result", async (event, ctx) => {
