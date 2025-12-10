@@ -322,10 +322,12 @@ export default function (pi: HookAPI) {
 
     const selected = options.find((o) => o.label === choice)?.value ?? "cancel";
 
-    if (selected === "cancel" || selected === "conv") {
-      return selected === "cancel"
-        ? { skipConversationRestore: true }
-        : undefined;
+    if (selected === "cancel") {
+      return { skipConversationRestore: true };
+    }
+    // "conv" - let default branch behavior restore conversation, don't touch files
+    if (selected === "conv") {
+      return undefined;
     }
 
     const saveAndRestore = async (target: CheckpointData) => {
