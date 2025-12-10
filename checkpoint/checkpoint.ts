@@ -310,7 +310,7 @@ export default function (pi: HookAPI) {
       sessionIds.push(header.id);
     }
 
-    // Walk the branchedFrom chain by reading parent session files
+    // Walk the branchedFrom chain using grep to extract branchedFrom without parsing
     let branchedFrom = header?.branchedFrom;
     while (branchedFrom) {
       // Extract session ID from file path
@@ -318,11 +318,17 @@ export default function (pi: HookAPI) {
       if (match && isSafeId(match[1])) {
         sessionIds.push(match[1]);
       }
-      // Read parent session to continue chain
+      // Use grep to extract branchedFrom from first line (faster than JSON.parse)
       try {
-        const content = await readFile(branchedFrom, "utf-8");
-        const parentHeader = JSON.parse(content.split("\n")[0]);
-        branchedFrom = parentHeader.branchedFrom;
+        const { stdout } = await new Promise<{ stdout: string }>(
+          (resolve, reject) => {
+            exec(
+              `head -1 "${branchedFrom}" | grep -o '"branchedFrom":"[^"]*"' | cut -d'"' -f4`,
+              (err, stdout) => (err ? reject(err) : resolve({ stdout })),
+            );
+          },
+        );
+        branchedFrom = stdout.trim() || undefined;
       } catch {
         break;
       }
