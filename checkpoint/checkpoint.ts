@@ -231,10 +231,14 @@ async function loadAllCheckpoints(
   );
 }
 
+// Validate ID contains only safe characters (alphanumeric, dash, underscore)
+const isSafeId = (id: string) => /^[\w-]+$/.test(id);
+
 async function getSessionIdFromFile(sessionFile: string): Promise<string> {
   try {
     const content = await readFile(sessionFile, "utf-8");
-    return JSON.parse(content.split("\n")[0]).id || "";
+    const id = JSON.parse(content.split("\n")[0]).id || "";
+    return isSafeId(id) ? id : "";
   } catch {
     return "";
   }
