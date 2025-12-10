@@ -288,31 +288,39 @@ export default function (pi: HookAPI) {
     // Wait for any in-flight checkpoint before loading
     if (pendingCheckpoint) await pendingCheckpoint;
 
-    const checkpoints = await loadAllCheckpoints(ctx.cwd, currentSessionId);
+    // Get session IDs to search (current + parent if branched)
+    const sessionIds = [currentSessionId];
+    const header = event.entries.find((e) => e.type === "session");
+    if (header && "branchedFrom" in header && header.branchedFrom) {
+      sessionIds.push(header.branchedFrom);
+    }
+
+    // Load checkpoints for current session and parent session (if branched)
+    const checkpoints = (
+      await Promise.all(sessionIds.map((id) => loadAllCheckpoints(ctx.cwd, id)))
+    ).flat();
 
     if (checkpoints.length === 0) {
-      ctx.ui.notify("No checkpoints available for this session", "warning");
+      ctx.ui.notify("No checkpoints available", "warning");
       return undefined;
     }
 
-    // Calculate the turn number from entry index
-    // Turn N corresponds to the Nth user message (0-indexed)
-    // event.targetTurnIndex is an entry index, not a turn number
-    let targetTurn = 0;
-    for (let i = 0; i < event.targetTurnIndex; i++) {
-      const entry = event.entries[i];
-      if (entry && "message" in entry && entry.message?.role === "user") {
-        targetTurn++;
-      }
-    }
+    // Get target entry timestamp and find checkpoint with closest matching timestamp
+    const targetEntry = event.entries[event.targetTurnIndex];
+    const targetTs =
+      targetEntry && "timestamp" in targetEntry
+        ? new Date(targetEntry.timestamp).getTime()
+        : Date.now();
 
-    // Find checkpoint with matching turn number
-    const checkpoint = checkpoints.find((cp) => cp.turnIndex === targetTurn);
-
-    if (!checkpoint) {
-      ctx.ui.notify(`No checkpoint found for turn ${targetTurn}`, "warning");
-      return undefined;
-    }
+    // Find checkpoint with timestamp closest to target (prefer slightly before)
+    const checkpoint = checkpoints.reduce((best, cp) => {
+      const bestDiff = Math.abs(best.timestamp - targetTs);
+      const cpDiff = Math.abs(cp.timestamp - targetTs);
+      // Prefer checkpoint that's before or equal to target
+      if (cp.timestamp <= targetTs && best.timestamp > targetTs) return cp;
+      if (best.timestamp <= targetTs && cp.timestamp > targetTs) return best;
+      return cpDiff < bestDiff ? cp : best;
+    });
 
     // Build menu options
     type Choice = "all" | "conv" | "code" | "oldest" | "cancel";
