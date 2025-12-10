@@ -583,7 +583,12 @@ export default function (pi: HookAPI) {
               notification += `\n... +${errors.length - MAX_DISPLAY} more`;
             }
             
-            ctx.ui.notify(notification, errorCount > 0 ? "error" : "warning");
+            // Show in UI (interactive) or console (print mode)
+            if (ctx.hasUI) {
+              ctx.ui.notify(notification, errorCount > 0 ? "error" : "warning");
+            } else {
+              console.error(notification);
+            }
             
             // Full output for LLM
             output += `\nThis file has errors, please fix\n<file_diagnostics>\n${errors.map(prettyDiagnostic).join("\n")}\n</file_diagnostics>\n`;
