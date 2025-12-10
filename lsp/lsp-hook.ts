@@ -22,7 +22,7 @@ import type { Diagnostic } from "vscode-languageserver-types";
 // Configuration
 // ============================================================================
 
-const DIAGNOSTICS_TIMEOUT_MS = 5000;
+const DIAGNOSTICS_TIMEOUT_MS = 3000;
 const INIT_TIMEOUT_MS = 30000;
 
 // ============================================================================
@@ -225,7 +225,7 @@ const LSP_SERVERS: LSPServerConfig[] = [
     findRoot: async (file, cwd) => findRoot(file, cwd, ["package.json", "vite.config.ts", "vite.config.js"]),
     spawn: async (root) => {
       const cmd = which("vue-language-server");
-      if (!cmd) { return undefined; }
+      if (!cmd) return undefined;
       return { process: spawn(cmd, ["--stdio"], { cwd: root, stdio: ["pipe", "pipe", "pipe"] }) };
     },
   },
@@ -237,7 +237,7 @@ const LSP_SERVERS: LSPServerConfig[] = [
     findRoot: async (file, cwd) => findRoot(file, cwd, ["package.json", "svelte.config.js"]),
     spawn: async (root) => {
       const cmd = which("svelteserver");
-      if (!cmd) { return undefined; }
+      if (!cmd) return undefined;
       return { process: spawn(cmd, ["--stdio"], { cwd: root, stdio: ["pipe", "pipe", "pipe"] }) };
     },
   },
@@ -249,7 +249,7 @@ const LSP_SERVERS: LSPServerConfig[] = [
     findRoot: async (file, cwd) => findRoot(file, cwd, ["pyproject.toml", "setup.py", "requirements.txt", "pyrightconfig.json"]),
     spawn: async (root) => {
       const cmd = which("pyright-langserver");
-      if (!cmd) { return undefined; }
+      if (!cmd) return undefined;
       return { process: spawn(cmd, ["--stdio"], { cwd: root, stdio: ["pipe", "pipe", "pipe"] }) };
     },
   },
@@ -265,7 +265,7 @@ const LSP_SERVERS: LSPServerConfig[] = [
     },
     spawn: async (root) => {
       const cmd = which("gopls");
-      if (!cmd) { return undefined; }
+      if (!cmd) return undefined;
       return { process: spawn(cmd, [], { cwd: root, stdio: ["pipe", "pipe", "pipe"] }) };
     },
   },
@@ -277,7 +277,7 @@ const LSP_SERVERS: LSPServerConfig[] = [
     findRoot: async (file, cwd) => findRoot(file, cwd, ["Cargo.toml"]),
     spawn: async (root) => {
       const cmd = which("rust-analyzer");
-      if (!cmd) { return undefined; }
+      if (!cmd) return undefined;
       return { process: spawn(cmd, [], { cwd: root, stdio: ["pipe", "pipe", "pipe"] }) };
     },
   },
@@ -343,14 +343,11 @@ class LSPManager {
       connection.onRequest("client/unregisterCapability", () => {});
       connection.onRequest("workspace/workspaceFolders", () => [{ name: "workspace", uri: `file://${root}` }]);
 
-      handle.process.stderr?.on("data", (data) => {
-      });
-
-      handle.process.on("exit", (code) => {
+      handle.process.on("exit", () => {
         this.clients.delete(key);
       });
 
-      handle.process.on("error", (err) => {
+      handle.process.on("error", () => {
         this.clients.delete(key);
         this.broken.add(key);
       });
@@ -385,7 +382,7 @@ class LSPManager {
       }
 
       return client;
-    } catch (err) {
+    } catch {
       this.broken.add(key);
       return undefined;
     }
@@ -428,13 +425,11 @@ class LSPManager {
     return clients;
   }
 
-  async touchFile(filePath: string, waitForDiagnostics: boolean = true): Promise<void> {
+  async touchFile(filePath: string): Promise<void> {
     const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(this.cwd, filePath);
 
     const clients = await this.getClientsForFile(absPath);
-    if (clients.length === 0) {
-      return;
-    }
+    if (clients.length === 0) return;
 
     const uri = `file://${absPath}`;
     const ext = path.extname(filePath);
@@ -443,31 +438,12 @@ class LSPManager {
     let content: string;
     try {
       content = fs.readFileSync(absPath, "utf-8");
-    } catch (err) {
+    } catch {
       return;
     }
 
-    const diagnosticsPromises: Promise<void>[] = [];
-
     for (const client of clients) {
       const version = client.openFiles.get(absPath);
-
-      let diagnosticsPromise: Promise<void> | undefined;
-      if (waitForDiagnostics) {
-        diagnosticsPromise = new Promise<void>((resolve) => {
-          const timeoutId = setTimeout(() => {
-            resolve();
-          }, DIAGNOSTICS_TIMEOUT_MS);
-
-          const listeners = client.diagnosticsListeners.get(absPath) || [];
-          listeners.push(() => {
-            clearTimeout(timeoutId);
-            resolve();
-          });
-          client.diagnosticsListeners.set(absPath, listeners);
-        });
-        diagnosticsPromises.push(diagnosticsPromise);
-      }
 
       try {
         if (version !== undefined) {
@@ -485,12 +461,9 @@ class LSPManager {
             textDocument: { uri, languageId, version: 0, text: content },
           });
         }
-      } catch (err) {
+      } catch {
+        // Ignore errors
       }
-    }
-
-    if (waitForDiagnostics && diagnosticsPromises.length > 0) {
-      await Promise.all(diagnosticsPromises);
     }
   }
 
@@ -526,11 +499,13 @@ class LSPManager {
 
 export default function (pi: HookAPI) {
   let lspManager: LSPManager | null = null;
+  const pendingFiles: Map<string, { isEdit: boolean }> = new Map();
 
   pi.on("session_start", async (_event, ctx) => {
     lspManager = new LSPManager(ctx.cwd);
   });
 
+  // On tool_result: trigger LSP analysis but don't block
   pi.on("tool_result", async (event, ctx) => {
     if (!lspManager) return;
 
@@ -545,67 +520,72 @@ export default function (pi: HookAPI) {
     const supported = LSP_SERVERS.some((s) => s.extensions.includes(ext));
     if (!supported) return;
 
+    const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(ctx.cwd, filePath);
+    pendingFiles.set(absPath, { isEdit });
 
-    try {
-      await lspManager.touchFile(filePath, true);
-      const diagnostics = lspManager.getAllDiagnostics();
-
-      const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(ctx.cwd, filePath);
-      let output = "";
-
-      // Format diagnostics for LLM
-      for (const [file, issues] of Object.entries(diagnostics)) {
-        if (issues.length === 0) continue;
-
-        if (file === absPath) {
-          // For the edited file
-          const errors = isEdit 
-            ? issues.filter((item) => item.severity === 1)  // Edit: only errors
-            : issues;  // Write: all diagnostics
-          
-          if (errors.length > 0) {
-            const relativePath = path.relative(ctx.cwd, file);
-            const errorCount = errors.filter(e => e.severity === 1).length;
-            const warnCount = errors.filter(e => e.severity === 2).length;
-            
-            // Build notification - show full messages, limit count
-            const MAX_DISPLAY = 5;
-            const displayErrors = errors.slice(0, MAX_DISPLAY);
-            const errorLines = displayErrors.map(e => {
-              const line = e.range.start.line + 1;
-              const sev = e.severity === 1 ? "ERROR" : "WARN";
-              const msg = e.message.split('\n')[0]; // First line only
-              return `${sev}[${line}] ${msg}`;
-            });
-            
-            let notification = `📋 ${relativePath}\n${errorLines.join('\n')}`;
-            if (errors.length > MAX_DISPLAY) {
-              notification += `\n... +${errors.length - MAX_DISPLAY} more`;
-            }
-            
-            // Show in UI (interactive) or console (print mode)
-            if (ctx.hasUI) {
-              ctx.ui.notify(notification, errorCount > 0 ? "error" : "warning");
-            } else {
-              console.error(notification);
-            }
-            
-            // Full output for LLM
-            output += `\nThis file has errors, please fix\n<file_diagnostics>\n${errors.map(prettyDiagnostic).join("\n")}\n</file_diagnostics>\n`;
-          }
-        } else if (isWrite) {
-          // Project diagnostics only for write
-          output += `\n<project_diagnostics>\n${file}\n${issues.map(prettyDiagnostic).join("\n")}\n</project_diagnostics>\n`;
-        }
-      }
-
-      if (output) {
-        return { result: event.result + output };
-      }
-    } catch {
-      // Ignore LSP errors silently
-    }
+    // Trigger LSP analysis (non-blocking)
+    lspManager.touchFile(filePath);
 
     return undefined;
+  });
+
+  // On turn_end: collect and show diagnostics
+  pi.on("turn_end", async (_event, ctx) => {
+    if (!lspManager || pendingFiles.size === 0) return;
+
+    // Wait for LSP to process
+    await new Promise(resolve => setTimeout(resolve, DIAGNOSTICS_TIMEOUT_MS));
+    
+    const diagnostics = lspManager.getAllDiagnostics();
+    let llmOutput = "";
+    let hasErrors = false;
+
+    for (const [absPath, { isEdit }] of pendingFiles) {
+      const issues = diagnostics[absPath];
+      if (!issues || issues.length === 0) continue;
+
+      const errors = isEdit 
+        ? issues.filter((item) => item.severity === 1)
+        : issues;
+      
+      if (errors.length === 0) continue;
+      hasErrors = true;
+
+      const relativePath = path.relative(ctx.cwd, absPath);
+      const errorCount = errors.filter(e => e.severity === 1).length;
+      
+      // Build notification for user
+      const MAX_DISPLAY = 5;
+      const displayErrors = errors.slice(0, MAX_DISPLAY);
+      const errorLines = displayErrors.map(e => {
+        const line = e.range.start.line + 1;
+        const sev = e.severity === 1 ? "ERROR" : "WARN";
+        const msg = e.message.split('\n')[0];
+        return `${sev}[${line}] ${msg}`;
+      });
+      
+      let notification = `📋 ${relativePath}\n${errorLines.join('\n')}`;
+      if (errors.length > MAX_DISPLAY) {
+        notification += `\n... +${errors.length - MAX_DISPLAY} more`;
+      }
+      
+      // Show to user
+      if (ctx.hasUI) {
+        ctx.ui.notify(notification, errorCount > 0 ? "error" : "warning");
+      } else {
+        console.error(notification);
+      }
+      
+      // Collect for LLM
+      llmOutput += `\nFile ${relativePath} has errors:\n<file_diagnostics>\n${errors.map(prettyDiagnostic).join("\n")}\n</file_diagnostics>\n`;
+    }
+
+    // Clear pending
+    pendingFiles.clear();
+
+    // Send to agent if there are errors
+    if (hasErrors && llmOutput) {
+      pi.send(`LSP Diagnostics - please fix these errors:\n${llmOutput}`);
+    }
   });
 }
