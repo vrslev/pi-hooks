@@ -317,15 +317,24 @@ export default function (pi: HookAPI) {
       completedCheckpoints.length = 0;
     }
     const refs = await listCheckpointRefs(cwd);
-    let loaded = 0;
     for (const refName of refs) {
       const data = await loadCheckpointFromRef(cwd, refName);
       if (data && data.sessionId === sessionId) {
         // Avoid duplicates
         if (!completedCheckpoints.find((c) => c.id === data.id)) {
           completedCheckpoints.push(data);
-          loaded++;
         }
+      }
+    }
+  }
+
+  async function loadAllCheckpoints(cwd: string) {
+    completedCheckpoints.length = 0;
+    const refs = await listCheckpointRefs(cwd);
+    for (const refName of refs) {
+      const data = await loadCheckpointFromRef(cwd, refName);
+      if (data) {
+        completedCheckpoints.push(data);
       }
     }
   }
@@ -398,19 +407,10 @@ export default function (pi: HookAPI) {
     // Wait for pending checkpoints
     await Promise.all(pendingCheckpoints);
 
-    // Get sessionId from entries header (this is the session we're branching FROM)
-    const header = event.entries.find((e) => e.type === "session") as
-      | { type: "session"; id: string }
-      | undefined;
-    const entriesSessionId = header?.id;
+    // Load all checkpoints from git refs (handles restart case)
+    await loadAllCheckpoints(ctx.cwd);
 
-    // Load checkpoints for the entries session (if different from current)
-    if (entriesSessionId && entriesSessionId !== currentSessionId) {
-      await loadCheckpointsForSession(ctx.cwd, entriesSessionId, false);
-    }
-
-    // Get ALL available checkpoints (from any session we know about), sorted by timestamp
-    // This handles the case where we branch from a branched session
+    // Get ALL available checkpoints sorted by timestamp (newest first)
     const allCheckpoints = [...completedCheckpoints].sort(
       (a, b) => b.timestamp - a.timestamp,
     );
