@@ -1,0 +1,33 @@
+{
+  "name": "pi-lsp-hook",
+  "version": "1.0.0",
+  "description": "LSP diagnostics hook for pi-coding-agent - provides real-time language server feedback for Dart/Flutter, TypeScript, Vue, Svelte, and more",
+  "main": "lsp-hook.ts",
+  "scripts": {
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "keywords": [
+    "lsp",
+    "language-server",
+    "dart",
+    "flutter",
+    "typescript",
+    "vue",
+    "svelte",
+    "pi-coding-agent",
+    "hook"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.18.0",
+    "vscode-jsonrpc": "^8.2.1",
+    "vscode-languageserver-types": "^3.17.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
