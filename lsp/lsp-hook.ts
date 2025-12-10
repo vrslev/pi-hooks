@@ -22,7 +22,7 @@ import type { Diagnostic } from "vscode-languageserver-types";
 // Configuration
 // ============================================================================
 
-const DIAGNOSTICS_TIMEOUT_MS = 10000;
+const DIAGNOSTICS_WAIT_MS = 2000; // Short wait for quick diagnostics
 const INIT_TIMEOUT_MS = 30000;
 
 // ============================================================================
@@ -425,11 +425,11 @@ class LSPManager {
     return clients;
   }
 
-  async touchFile(filePath: string): Promise<void> {
+  async touchFileAndWait(filePath: string, timeoutMs: number): Promise<Diagnostic[]> {
     const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(this.cwd, filePath);
 
     const clients = await this.getClientsForFile(absPath);
-    if (clients.length === 0) return;
+    if (clients.length === 0) return [];
 
     const uri = `file://${absPath}`;
     const ext = path.extname(filePath);
@@ -439,11 +439,27 @@ class LSPManager {
     try {
       content = fs.readFileSync(absPath, "utf-8");
     } catch {
-      return;
+      return [];
     }
+
+    // Set up listeners for diagnostics
+    const diagnosticsPromises: Promise<void>[] = [];
 
     for (const client of clients) {
       const version = client.openFiles.get(absPath);
+
+      // Create promise that resolves when diagnostics arrive or timeout
+      const diagnosticsPromise = new Promise<void>((resolve) => {
+        const timeoutId = setTimeout(resolve, timeoutMs);
+        
+        const listeners = client.diagnosticsListeners.get(absPath) || [];
+        listeners.push(() => {
+          clearTimeout(timeoutId);
+          resolve();
+        });
+        client.diagnosticsListeners.set(absPath, listeners);
+      });
+      diagnosticsPromises.push(diagnosticsPromise);
 
       try {
         if (version !== undefined) {
@@ -465,19 +481,18 @@ class LSPManager {
         // Ignore errors
       }
     }
-  }
 
-  /** Get all diagnostics from all clients */
-  getAllDiagnostics(): Record<string, Diagnostic[]> {
-    const results: Record<string, Diagnostic[]> = {};
-    for (const client of this.clients.values()) {
-      for (const [filePath, diagnostics] of client.diagnostics) {
-        const arr = results[filePath] || [];
-        arr.push(...diagnostics);
-        results[filePath] = arr;
-      }
+    // Wait for diagnostics (or timeout)
+    await Promise.all(diagnosticsPromises);
+
+    // Collect diagnostics
+    const allDiagnostics: Diagnostic[] = [];
+    for (const client of clients) {
+      const diags = client.diagnostics.get(absPath);
+      if (diags) allDiagnostics.push(...diags);
     }
-    return results;
+
+    return allDiagnostics;
   }
 
   async shutdown(): Promise<void> {
@@ -499,13 +514,11 @@ class LSPManager {
 
 export default function (pi: HookAPI) {
   let lspManager: LSPManager | null = null;
-  const pendingFiles: Map<string, { isEdit: boolean }> = new Map();
 
   pi.on("session_start", async (_event, ctx) => {
     lspManager = new LSPManager(ctx.cwd);
   });
 
-  // On tool_result: trigger LSP analysis but don't block
   pi.on("tool_result", async (event, ctx) => {
     if (!lspManager) return;
 
@@ -520,37 +533,18 @@ export default function (pi: HookAPI) {
     const supported = LSP_SERVERS.some((s) => s.extensions.includes(ext));
     if (!supported) return;
 
-    const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(ctx.cwd, filePath);
-    pendingFiles.set(absPath, { isEdit });
-
-    // Trigger LSP analysis (non-blocking)
-    lspManager.touchFile(filePath);
-
-    return undefined;
-  });
-
-  // On turn_end: collect and show diagnostics
-  pi.on("turn_end", async (_event, ctx) => {
-    if (!lspManager || pendingFiles.size === 0) return;
-
-    // Wait for LSP to process
-    await new Promise(resolve => setTimeout(resolve, DIAGNOSTICS_TIMEOUT_MS));
-    
-    const diagnostics = lspManager.getAllDiagnostics();
-    let llmOutput = "";
-    let hasErrors = false;
-
-    for (const [absPath, { isEdit }] of pendingFiles) {
-      const issues = diagnostics[absPath];
-      if (!issues || issues.length === 0) continue;
-
-      const errors = isEdit 
-        ? issues.filter((item) => item.severity === 1)
-        : issues;
+    try {
+      // Wait briefly for diagnostics (non-blocking feel but catches most cases)
+      const diagnostics = await lspManager.touchFileAndWait(filePath, DIAGNOSTICS_WAIT_MS);
       
-      if (errors.length === 0) continue;
-      hasErrors = true;
+      // Filter based on tool type
+      const errors = isEdit 
+        ? diagnostics.filter((item) => item.severity === 1)
+        : diagnostics;
+      
+      if (errors.length === 0) return;
 
+      const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(ctx.cwd, filePath);
       const relativePath = path.relative(ctx.cwd, absPath);
       const errorCount = errors.filter(e => e.severity === 1).length;
       
@@ -576,16 +570,13 @@ export default function (pi: HookAPI) {
         console.error(notification);
       }
       
-      // Collect for LLM
-      llmOutput += `\nFile ${relativePath} has errors:\n<file_diagnostics>\n${errors.map(prettyDiagnostic).join("\n")}\n</file_diagnostics>\n`;
+      // Append to result for LLM
+      const output = `\nThis file has errors, please fix\n<file_diagnostics>\n${errors.map(prettyDiagnostic).join("\n")}\n</file_diagnostics>\n`;
+      return { result: event.result + output };
+    } catch {
+      // Ignore LSP errors
     }
 
-    // Clear pending
-    pendingFiles.clear();
-
-    // Send diagnostics to agent (silently, no visible message)
-    if (hasErrors && llmOutput) {
-      pi.send(llmOutput);
-    }
+    return undefined;
   });
 }
