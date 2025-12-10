@@ -23,7 +23,7 @@ function execAsync(
     cwd?: string;
     env?: NodeJS.ProcessEnv;
     input?: string;
-  } = {}
+  } = {},
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const proc = exec(
@@ -39,7 +39,7 @@ function execAsync(
         } else {
           resolve({ stdout, stderr });
         }
-      }
+      },
     );
     if (options.input && proc.stdin) {
       proc.stdin.write(options.input);
@@ -72,7 +72,7 @@ async function isGitRepo(cwd: string): Promise<boolean> {
 
 async function createCheckpoint(
   cwd: string,
-  turnIndex: number
+  turnIndex: number,
 ): Promise<CheckpointData | null> {
   // Get current HEAD
   const { stdout: headRef } = await execAsync("git rev-parse HEAD", { cwd });
@@ -81,7 +81,7 @@ async function createCheckpoint(
   // This captures staged + unstaged changes to tracked files
   const { stdout: stashRef } = await execAsync(
     "git stash create --include-untracked",
-    { cwd }
+    { cwd },
   );
 
   const ref = stashRef.trim();
@@ -99,7 +99,7 @@ async function createCheckpoint(
 
 async function restoreCheckpoint(
   cwd: string,
-  checkpoint: CheckpointData
+  checkpoint: CheckpointData,
 ): Promise<void> {
   // 1. Reset to the HEAD at checkpoint time
   await execAsync(`git reset --hard ${checkpoint.headRef}`, { cwd });
@@ -118,7 +118,7 @@ async function restoreCheckpoint(
         await execAsync(`git stash apply ${checkpoint.stashRef}`, { cwd });
       } catch (e) {
         throw new Error(
-          `Failed to apply stash: ${e instanceof Error ? e.message : String(e)}`
+          `Failed to apply stash: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
     }
@@ -145,10 +145,6 @@ export default function (pi: HookAPI) {
   pi.on("session_start", async (event, ctx) => {
     // Check if we're in a git repo
     gitAvailable = await isGitRepo(ctx.cwd);
-
-    if (gitAvailable) {
-      ctx.ui.notify("Git checkpointing enabled", "info");
-    }
   });
 
   pi.on("turn_start", async (event, ctx) => {
@@ -214,7 +210,7 @@ export default function (pi: HookAPI) {
       } catch (error) {
         ctx.ui.notify(
           `Restore failed: ${error instanceof Error ? error.message : String(error)}`,
-          "error"
+          "error",
         );
       }
       return { skipConversationRestore: true };
@@ -228,7 +224,7 @@ export default function (pi: HookAPI) {
       } catch (error) {
         ctx.ui.notify(
           `File restore failed: ${error instanceof Error ? error.message : String(error)}`,
-          "error"
+          "error",
         );
       }
       return undefined; // Let conversation restore proceed
