@@ -239,7 +239,7 @@ async function getSessionIdFromFile(sessionFile: string): Promise<string> {
 // ============================================================================
 
 export default function (pi: HookAPI) {
-  const checkpoints: CheckpointData[] = [];
+  let pendingCheckpoint: Promise<void> | null = null;
   let gitAvailable = false;
   let checkpointingFailed = false;
   let currentSessionId = "";
@@ -251,12 +251,6 @@ export default function (pi: HookAPI) {
 
     currentSessionFile = ctx.sessionFile;
     currentSessionId = await getSessionIdFromFile(ctx.sessionFile);
-
-    if (currentSessionId) {
-      checkpoints.push(
-        ...(await loadAllCheckpoints(ctx.cwd, currentSessionId)),
-      );
-    }
   });
 
   pi.on("turn_start", async (event, ctx) => {
@@ -267,18 +261,11 @@ export default function (pi: HookAPI) {
     }
     if (!currentSessionId) return;
 
-    // Fire and forget - don't block the turn
-    (async () => {
+    // Fire and forget - but track promise so branch can wait
+    pendingCheckpoint = (async () => {
       try {
         const id = `${currentSessionId}-turn-${event.turnIndex}-${event.timestamp}`;
-        checkpoints.push(
-          await createCheckpoint(
-            ctx.cwd,
-            id,
-            event.turnIndex,
-            currentSessionId,
-          ),
-        );
+        await createCheckpoint(ctx.cwd, id, event.turnIndex, currentSessionId);
       } catch {
         checkpointingFailed = true;
       }
@@ -288,11 +275,11 @@ export default function (pi: HookAPI) {
   pi.on("branch", async (event, ctx) => {
     if (!gitAvailable) return undefined;
 
-    // Reload all checkpoints from git refs
-    checkpoints.length = 0;
-    checkpoints.push(...(await loadAllCheckpoints(ctx.cwd)));
+    // Wait for any in-flight checkpoint before loading
+    if (pendingCheckpoint) await pendingCheckpoint;
 
-    const sorted = [...checkpoints].sort((a, b) => b.timestamp - a.timestamp);
+    const checkpoints = await loadAllCheckpoints(ctx.cwd);
+    const sorted = checkpoints.sort((a, b) => b.timestamp - a.timestamp);
 
     if (sorted.length === 0) {
       ctx.ui.notify("No checkpoints available", "warning");
