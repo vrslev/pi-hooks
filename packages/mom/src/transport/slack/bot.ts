@@ -432,7 +432,7 @@ export class SlackBot {
 			}
 
 			if (isDM) {
-				if (!this.settingsManager?.canUserDM(e.user)) {
+				if (!this.settingsManager?.canUserDM("slack", e.user)) {
 					return;
 				}
 

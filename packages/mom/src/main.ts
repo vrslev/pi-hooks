@@ -485,7 +485,7 @@ async function startDiscordBot({ workingDir, sandbox }: { workingDir: string; sa
 			const runnerKey = toRunnerKey(channelId);
 
 			const isDM = interaction.guildId === null;
-			if (isDM && !settingsManager.canUserDM(interaction.user.id)) {
+			if (isDM && !settingsManager.canUserDM("discord", interaction.user.id)) {
 				return;
 			}
 

@@ -337,6 +337,13 @@ export interface BotProfileSettings {
 	slack?: SlackProfileSettings;
 }
 
+export type TransportType = "slack" | "discord";
+
+export interface AllowDMsPerTransport {
+	slack?: boolean;
+	discord?: boolean;
+}
+
 export interface MomSettings {
 	defaultProvider?: string;
 	defaultModel?: string;
@@ -345,7 +352,7 @@ export interface MomSettings {
 	retry?: Partial<MomRetrySettings>;
 	usageSummary?: boolean | Partial<MomUsageSummarySettings>;
 	profile?: BotProfileSettings;
-	allowDMs?: boolean;
+	allowDMs?: boolean | AllowDMsPerTransport;
 	dmAllowlist?: string[];
 	showDetails?: boolean;
 }
@@ -538,8 +545,20 @@ export class MomSettingsManager {
 		return this.settings.profile?.slack ?? {};
 	}
 
-	canUserDM(userId: string): boolean {
-		if (!this.settings.allowDMs) return false;
+	canUserDM(transport: TransportType, userId: string): boolean {
+		const allowDMs = this.settings.allowDMs;
+		let allowed: boolean;
+
+		if (typeof allowDMs === "boolean") {
+			allowed = allowDMs;
+		} else if (typeof allowDMs === "object" && allowDMs !== null) {
+			const transportDefault = transport === "slack";
+			allowed = allowDMs[transport] ?? transportDefault;
+		} else {
+			allowed = transport === "slack";
+		}
+
+		if (!allowed) return false;
 		const allowlist = this.settings.dmAllowlist ?? [];
 		if (allowlist.length === 0) return true;
 		return allowlist.includes(userId);
