@@ -1,69 +1,100 @@
-# Usage Summary Customization
+# Usage Summary
 
-Configure how the Usage Summary appears after each run via `settings.json` in your workspace.
+The usage summary appears after each response, showing token usage, context utilization, and cost.
 
-## Quick Reference
+## Configuration
 
 ```json
 // Disable entirely
 { "usageSummary": false }
 
-// Customize fields
-{
-  "usageSummary": {
-    "title": "Stats",
-    "fields": {
-      "tokens": { "label": "I/O", "format": "{input} in / {output} out" },
-      "cache": false
-    }
-  }
-}
+// Enable (default)
+{ "usageSummary": true }
 
-// Full control via script
+// Custom formatter for full control
 { "usageSummary": { "formatter": "./scripts/my-formatter.js" } }
 ```
 
-## Options
+## Default Output
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `enabled` | boolean | `true` | Show/hide usage summary |
-| `title` | string | `"Usage Summary"` | Header text |
-| `formatter` | string | - | Path to custom script (bypasses templates) |
-| `fields` | object | - | Per-field configuration |
-| `footer` | object | - | Footer configuration |
+When enabled without a formatter, the usage summary displays:
 
-## Field Configuration
-
-Each field (`tokens`, `context`, `cost`, `cache`) accepts:
-- `false` - hide the field
-- `{ enabled, label, format }` - customize the field
-
-**Placeholders:**
-- `tokens`: `{input}`, `{output}`
-- `context`: `{used}`, `{max}`, `{percent}`
-- `cost`: `{total}`, `{input}`, `{output}`, `{cacheRead}`, `{cacheWrite}`
-- `cache`: `{read}`, `{write}`
+- **Tokens**: Input and output token counts
+- **Context**: Percentage of context window used
+- **Cache**: Cache read/write counts (if any)
+- **Cost**: Total cost with breakdown in footer
 
 ## Custom Formatter
 
-For full control, create a script that receives usage data on stdin and outputs JSON:
+For full control over the output, create a formatter script. The script receives usage data on stdin and outputs JSON.
+
+### Input (stdin)
+
+```json
+{
+  "tokens": { "input": 1234, "output": 567 },
+  "cache": { "read": 500, "write": 100 },
+  "context": { "used": 50000, "max": 200000, "percent": "25.0%" },
+  "cost": {
+    "input": 0.01,
+    "output": 0.02,
+    "cacheRead": 0.001,
+    "cacheWrite": 0.002,
+    "total": 0.033
+  }
+}
+```
+
+### Output (Discord)
+
+Discord formatters output structured embed data:
+
+```json
+{
+  "title": "My Stats",
+  "color": 2829617,
+  "fields": [
+    { "name": "I/O", "value": "1,234 in / 567 out", "inline": true },
+    { "name": "Cost", "value": "$0.033", "inline": true }
+  ],
+  "footer": "Custom footer text"
+}
+```
+
+### Output (Slack)
+
+Slack formatters output plain text:
+
+```json
+{
+  "text": "*Stats*\nI/O: 1,234 in / 567 out\nCost: $0.033"
+}
+```
+
+### Example Formatter
 
 ```javascript
 #!/usr/bin/env node
-const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-console.log(JSON.stringify({
-  title: "My Stats",
-  color: 0x2b2d31,
-  fields: [{ name: "Cost", value: `$${data.cost.total.toFixed(4)}`, inline: true }],
-  footer: "Custom footer"
-}));
+const data = JSON.parse(require("fs").readFileSync(0, "utf8"));
+
+const formatCost = (n) => `$${n.toFixed(4)}`;
+
+console.log(
+  JSON.stringify({
+    title: "Usage",
+    color: 0x2b2d31,
+    fields: [
+      {
+        name: "Tokens",
+        value: `${data.tokens.input.toLocaleString()} in / ${data.tokens.output.toLocaleString()} out`,
+        inline: true,
+      },
+      { name: "Cost", value: formatCost(data.cost.total), inline: true },
+    ],
+  })
+);
 ```
 
-**Input:** `{ tokens, cache, context, cost }` (same structure as UsageSummaryData)
+Make the script executable: `chmod +x scripts/my-formatter.js`
 
-**Output (Discord):** `{ title?, color?, fields?, footer? }`
-
-**Output (Slack):** `{ text: "..." }`
-
-If the formatter fails, falls back to template system.
+If the formatter fails or returns invalid JSON, the default format is used as a fallback.

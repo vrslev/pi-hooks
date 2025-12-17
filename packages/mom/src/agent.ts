@@ -1056,13 +1056,12 @@ function createRunner(
 					};
 
 					if (ctx.showDetails) {
-						// Check for custom formatter script
 						if (usageSummarySettings.formatter) {
 							const formatterOutput = runFormatter(usageSummarySettings.formatter, workingDir, usageData);
 							if (formatterOutput) {
 								if (ctx.sendUsageSummary) {
 									runState.queue.enqueue(
-										() => ctx.sendUsageSummary!(usageData, usageSummarySettings, formatterOutput),
+										() => ctx.sendUsageSummary!(usageData, formatterOutput),
 										"usage summary",
 									);
 								} else {
@@ -1072,21 +1071,12 @@ function createRunner(
 								await queueChain;
 								return { stopReason: runState.stopReason, errorMessage: runState.errorMessage };
 							}
-							// Formatter failed, fall through to template system
 						}
 
 						if (ctx.sendUsageSummary) {
-							runState.queue.enqueue(
-								() => ctx.sendUsageSummary!(usageData, usageSummarySettings),
-								"usage summary",
-							);
+							runState.queue.enqueue(() => ctx.sendUsageSummary!(usageData), "usage summary");
 						} else {
-							const summary = formatUsageSummaryText(
-								runState.totalUsage,
-								contextTokens,
-								contextWindow,
-								usageSummarySettings,
-							);
+							const summary = formatUsageSummaryText(runState.totalUsage, contextTokens, contextWindow);
 							runState.queue.enqueue(() => ctx.send("details", summary, { log: false }), "usage summary");
 						}
 						await queueChain;

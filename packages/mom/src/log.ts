@@ -1,5 +1,4 @@
 import chalk from "chalk";
-import type { ResolvedUsageSummarySettings } from "./context.js";
 
 export interface LogContext {
 	channelId: string;
@@ -241,10 +240,6 @@ export function logUsageSummary(
 	return summary;
 }
 
-export function interpolate(template: string, data: Record<string, string | number>): string {
-	return template.replace(/\{(\w+)\}/g, (_, key) => String(data[key] ?? `{${key}}`));
-}
-
 export function formatUsageSummaryText(
 	usage: {
 		input: number;
@@ -255,62 +250,27 @@ export function formatUsageSummaryText(
 	},
 	contextTokens: number | undefined,
 	contextWindow: number | undefined,
-	settings: ResolvedUsageSummarySettings,
 ): string {
 	const formatNum = (n: number) => n.toLocaleString();
 	const formatCost = (n: number) => `$${n.toFixed(4)}`;
 
 	const lines: string[] = [];
-	lines.push(`*${settings.title}*`);
+	lines.push("*Usage Summary*");
+	lines.push(`Tokens: \`${formatNum(usage.input)}\` in  \`${formatNum(usage.output)}\` out`);
 
-	const { fields } = settings;
-
-	if (fields.tokens.enabled) {
-		const value = interpolate(fields.tokens.format!, {
-			input: formatNum(usage.input),
-			output: formatNum(usage.output),
-		});
-		lines.push(`${fields.tokens.label}: ${value}`);
-	}
-
-	if (fields.context.enabled && contextTokens && contextWindow) {
+	if (contextTokens && contextWindow) {
 		const percent = ((contextTokens / contextWindow) * 100).toFixed(1) + "%";
-		const value = interpolate(fields.context.format!, {
-			used: formatNum(contextTokens),
-			max: formatNum(contextWindow),
-			percent,
-		});
-		lines.push(`${fields.context.label}: ${value}`);
+		lines.push(`Context: \`${percent}\` of ${formatNum(contextWindow)}`);
 	}
 
-	if (fields.cache.enabled && (usage.cacheRead > 0 || usage.cacheWrite > 0)) {
-		const value = interpolate(fields.cache.format!, {
-			read: formatNum(usage.cacheRead),
-			write: formatNum(usage.cacheWrite),
-		});
-		lines.push(`${fields.cache.label}: ${value}`);
+	if (usage.cacheRead > 0 || usage.cacheWrite > 0) {
+		lines.push(`Cache: \`${formatNum(usage.cacheRead)}\` read  \`${formatNum(usage.cacheWrite)}\` write`);
 	}
 
-	if (fields.cost.enabled) {
-		const value = interpolate(fields.cost.format!, {
-			total: formatCost(usage.cost.total),
-			input: formatCost(usage.cost.input),
-			output: formatCost(usage.cost.output),
-			cacheRead: formatCost(usage.cost.cacheRead),
-			cacheWrite: formatCost(usage.cost.cacheWrite),
-		});
-		lines.push(`${fields.cost.label}: ${value}`);
-	}
-
-	if (settings.footer.enabled) {
-		const footerValue = interpolate(settings.footer.format, {
-			input: formatCost(usage.cost.input),
-			output: formatCost(usage.cost.output),
-			cacheRead: formatCost(usage.cost.cacheRead),
-			cacheWrite: formatCost(usage.cost.cacheWrite),
-		});
-		lines.push(footerValue);
-	}
+	lines.push(`Cost: **${formatCost(usage.cost.total)}**`);
+	lines.push(
+		`In: ${formatCost(usage.cost.input)} | Out: ${formatCost(usage.cost.output)} | Cache read: ${formatCost(usage.cost.cacheRead)} | Cache write: ${formatCost(usage.cost.cacheWrite)}`,
+	);
 
 	return lines.join("\n");
 }

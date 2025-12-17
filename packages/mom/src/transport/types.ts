@@ -1,5 +1,3 @@
-import type { ResolvedUsageSummarySettings } from "../context.js";
-
 export type TransportName = "slack" | "discord";
 
 export type ReplyTarget = "response" | "details";
@@ -106,11 +104,7 @@ export interface TransportContext {
 
 	// Optional transport-specific UX
 	sendToolResult?: (data: ToolResultData) => Promise<void>;
-	sendUsageSummary?: (
-		data: UsageSummaryData,
-		settings: ResolvedUsageSummarySettings,
-		formatterOutput?: FormatterOutput,
-	) => Promise<void>;
+	sendUsageSummary?: (data: UsageSummaryData, formatterOutput?: FormatterOutput) => Promise<void>;
 	addStopControl?: () => Promise<void>;
 	removeStopControl?: () => Promise<void>;
 }

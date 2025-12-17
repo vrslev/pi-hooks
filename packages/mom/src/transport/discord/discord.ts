@@ -21,14 +21,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { request as httpRequest } from "http";
 import { request as httpsRequest } from "https";
 import { basename, join, resolve } from "path";
-import type {
-	DiscordProfileActivityType,
-	DiscordProfileSettings,
-	MomSettingsManager,
-	ResolvedUsageSummarySettings,
-} from "../../context.js";
+import type { DiscordProfileActivityType, DiscordProfileSettings, MomSettingsManager } from "../../context.js";
 import * as log from "../../log.js";
-import { interpolate } from "../../log.js";
 import type {
 	ChannelInfo,
 	FormatterOutput,
@@ -716,12 +710,10 @@ export class MomDiscordBot {
 			}
 		};
 
-		const sendUsageSummary = async (
-			data: UsageSummaryData,
-			settings: ResolvedUsageSummarySettings,
-			formatterOutput?: FormatterOutput,
-		): Promise<void> => {
-			// If custom formatter output is provided, use it directly
+		const sendUsageSummary = async (data: UsageSummaryData, formatterOutput?: FormatterOutput): Promise<void> => {
+			const formatNum = (n: number) => n.toLocaleString();
+			const formatCost = (n: number) => `$${n.toFixed(4)}`;
+
 			if (formatterOutput) {
 				const embed = new EmbedBuilder()
 					.setColor(formatterOutput.color ?? 0x2b2d31)
@@ -742,58 +734,37 @@ export class MomDiscordBot {
 				return;
 			}
 
-			// Otherwise use template system
-			const formatNum = (n: number) => n.toLocaleString();
-			const formatCost = (n: number) => `$${n.toFixed(4)}`;
-			const { fields } = settings;
+			const embed = new EmbedBuilder().setColor(0x2b2d31).setAuthor({ name: "Usage Summary" });
 
-			const embed = new EmbedBuilder().setColor(0x2b2d31).setAuthor({ name: settings.title });
+			embed.addFields({
+				name: "Tokens",
+				value: `\`${formatNum(data.tokens.input)}\` in  \`${formatNum(data.tokens.output)}\` out`,
+				inline: true,
+			});
 
-			if (fields.tokens.enabled) {
-				const value = interpolate(fields.tokens.format!, {
-					input: formatNum(data.tokens.input),
-					output: formatNum(data.tokens.output),
+			embed.addFields({
+				name: "Context",
+				value: `\`${data.context.percent}\` of ${formatNum(data.context.max)}`,
+				inline: true,
+			});
+
+			embed.addFields({
+				name: "Cost",
+				value: `**${formatCost(data.cost.total)}**`,
+				inline: true,
+			});
+
+			if (data.cache.read > 0 || data.cache.write > 0) {
+				embed.addFields({
+					name: "Cache",
+					value: `\`${formatNum(data.cache.read)}\` read  \`${formatNum(data.cache.write)}\` write`,
+					inline: true,
 				});
-				embed.addFields({ name: fields.tokens.label!, value, inline: true });
 			}
 
-			if (fields.context.enabled) {
-				const value = interpolate(fields.context.format!, {
-					used: formatNum(data.context.used),
-					max: formatNum(data.context.max),
-					percent: data.context.percent,
-				});
-				embed.addFields({ name: fields.context.label!, value, inline: true });
-			}
-
-			if (fields.cost.enabled) {
-				const value = interpolate(fields.cost.format!, {
-					total: formatCost(data.cost.total),
-					input: formatCost(data.cost.input),
-					output: formatCost(data.cost.output),
-					cacheRead: formatCost(data.cost.cacheRead),
-					cacheWrite: formatCost(data.cost.cacheWrite),
-				});
-				embed.addFields({ name: fields.cost.label!, value, inline: true });
-			}
-
-			if (fields.cache.enabled && (data.cache.read > 0 || data.cache.write > 0)) {
-				const value = interpolate(fields.cache.format!, {
-					read: formatNum(data.cache.read),
-					write: formatNum(data.cache.write),
-				});
-				embed.addFields({ name: fields.cache.label!, value, inline: true });
-			}
-
-			if (settings.footer.enabled) {
-				const footerText = interpolate(settings.footer.format, {
-					input: formatCost(data.cost.input),
-					output: formatCost(data.cost.output),
-					cacheRead: formatCost(data.cost.cacheRead),
-					cacheWrite: formatCost(data.cost.cacheWrite),
-				});
-				embed.setFooter({ text: footerText });
-			}
+			embed.setFooter({
+				text: `In: ${formatCost(data.cost.input)} | Out: ${formatCost(data.cost.output)} | Cache read: ${formatCost(data.cost.cacheRead)} | Cache write: ${formatCost(data.cost.cacheWrite)}`,
+			});
 
 			const summaryMsg = await params.postEmbed(embed);
 			secondaryMessages.push(summaryMsg);
