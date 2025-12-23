@@ -119,7 +119,7 @@ function findRoot(
   markers: string[],
 ): string | undefined {
   const found = findNearestFile(path.dirname(file), markers, cwd);
-  return found ? path.dirname(found) : cwd;
+  return found ? path.dirname(found) : undefined;
 }
 
 function withTimeout<T>(
