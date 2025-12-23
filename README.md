@@ -18,6 +18,20 @@ Minimal reference hooks for [`pi-coding-agent`](https://www.npmjs.com/package/@m
 
 ![LSP Hook](assets/lsp-screenshot.png)
 
+### `autonomy/autonomy.ts`
+Layered permission control with four autonomy levels:
+
+| Level  | Description           | What's allowed                                      |
+|--------|-----------------------|-----------------------------------------------------|
+| Off    | Read-only mode        | Only read commands (ls, cat, git status, etc.)      |
+| Low    | File edits            | + write/edit files within project                   |
+| Medium | Dev commands          | + npm, git, make, cargo, etc.                       |
+| High   | Full access           | Everything (dangerous commands still prompt)        |
+
+On first run you pick a level; it's saved per-project. You can escalate mid-session when needed.
+
+![Autonomy Hook](assets/autonomy-screenshot.png)
+
 ## Usage
 1. Install dependencies inside each hook directory (`npm install`).
 2. **Project-scoped setup (`.pi/hooks`)**
@@ -34,7 +48,8 @@ Minimal reference hooks for [`pi-coding-agent`](https://www.npmjs.com/package/@m
    {
      "hooks": [
        "/absolute/path/to/pi-hooks/checkpoint/checkpoint.ts",
-       "/absolute/path/to/pi-hooks/lsp/lsp-hook.ts"
+       "/absolute/path/to/pi-hooks/lsp/lsp-hook.ts",
+       "/absolute/path/to/pi-hooks/autonomy/autonomy.ts"
      ]
    }
    ```
