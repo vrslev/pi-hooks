@@ -1,6 +1,6 @@
 {
-  "name": "pi-lsp-hook",
-  "version": "1.0.0",
+  "name": "lsp",
+  "version": "0.31.0",
   "description": "LSP diagnostics hook for pi-coding-agent - provides real-time language server feedback for Dart/Flutter, TypeScript, Vue, Svelte, and more",
   "main": "lsp-hook.ts",
   "scripts": {
