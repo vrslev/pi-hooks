@@ -99,21 +99,105 @@ interface ParsedCommand {
   raw: string;
 }
 
+// Shell execution commands that can run arbitrary code
+const SHELL_EXECUTION_COMMANDS = new Set([
+  "eval", "exec", "source", ".", // shell builtins
+  "xargs", // can execute commands
+]);
+
+// Patterns that indicate command substitution or shell tricks in raw command
+// Only patterns that can actually execute arbitrary code
+const SHELL_TRICK_PATTERNS = [
+  /\$\([^)]+\)/, // $(command) - command substitution
+  /`[^`]+`/, // `command` - backtick substitution
+  /<\([^)]+\)/, // <(command) - process substitution (input)
+  />\([^)]+\)/, // >(command) - process substitution (output)
+];
+
+// Check if ${...} contains nested command substitution
+// Simple ${VAR} is safe, but ${VAR:-$(cmd)} or ${VAR:-`cmd`} is dangerous
+function hasDangerousExpansion(command: string): boolean {
+  const braceExpansions = command.match(/\$\{[^}]+\}/g) || [];
+  for (const expansion of braceExpansions) {
+    // Check for nested $() or backticks inside ${...}
+    if (/\$\(|\`/.test(expansion)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function detectShellTricks(command: string): boolean {
+  // Check basic patterns first
+  if (SHELL_TRICK_PATTERNS.some(pattern => pattern.test(command))) {
+    return true;
+  }
+  // Check for dangerous ${...} expansions with nested command substitution
+  if (hasDangerousExpansion(command)) {
+    return true;
+  }
+  return false;
+}
+
 function parseCommand(command: string): ParsedCommand {
-  const tokens = parse(command);
+  const hasShellTricks = detectShellTricks(command);
+  
+  // shell-quote can throw on complex patterns it doesn't understand
+  // In that case, treat the command as having shell tricks (require high permission)
+  let tokens: ReturnType<typeof parse>;
+  try {
+    tokens = parse(command);
+  } catch {
+    // Parse failed - treat as dangerous
+    return {
+      segments: [],
+      operators: [],
+      raw: command,
+      hasShellTricks: true
+    };
+  }
+
   const segments: string[][] = [];
   const operators: string[] = [];
   let currentSegment: string[] = [];
+  let foundCommandSubstitution = false;
+
+  // Redirection operators - these don't start new command segments
+  const REDIRECTION_OPS = new Set([">", "<", ">>", ">&", "<&", ">|", "<>"]);
+  let skipNextToken = false;
 
   for (const token of tokens) {
+    if (skipNextToken) {
+      // This token is a redirection target (file path), not a command
+      skipNextToken = false;
+      continue;
+    }
     if (typeof token === "string") {
       currentSegment.push(token);
-    } else if (token && typeof token === "object" && "op" in token) {
-      if (currentSegment.length > 0) {
-        segments.push(currentSegment);
-        currentSegment = [];
+    } else if (token && typeof token === "object") {
+      if ("op" in token) {
+        const op = token.op as string;
+        if (REDIRECTION_OPS.has(op)) {
+          // Redirection operator - skip the next token (file path)
+          skipNextToken = true;
+        } else {
+          // Command separator like |, &&, ||, ;
+          if (currentSegment.length > 0) {
+            segments.push(currentSegment);
+            currentSegment = [];
+          }
+          operators.push(op);
+        }
+      } else if ("comment" in token) {
+        // Comment - ignore
+      } else {
+        // shell-quote returns special objects for:
+        // - { op: 'glob', pattern: '*.js' } - globs
+        // - { op: string } - operators
+        // Any other object type indicates shell parsing complexity
+        // that we should treat as potentially dangerous
+        foundCommandSubstitution = true;
       }
-      operators.push(token.op as string);
     }
   }
 
@@ -121,7 +205,12 @@ function parseCommand(command: string): ParsedCommand {
     segments.push(currentSegment);
   }
 
-  return { segments, operators, raw: command };
+  return {
+    segments,
+    operators,
+    raw: command,
+    hasShellTricks: hasShellTricks || foundCommandSubstitution
+  };
 }
 
 function getCommandName(tokens: string[]): string {
@@ -184,7 +273,8 @@ function isDangerousCommand(tokens: string[]): boolean {
   }
 
   // Dangerous system commands
-  if (["mkfs", "fdisk", "parted", "format"].includes(cmd)) return true;
+  if (["fdisk", "parted", "format"].includes(cmd)) return true;
+  if (cmd.startsWith("mkfs")) return true; // mkfs, mkfs.ext4, mkfs.xfs, etc.
 
   // Shutdown/reboot
   if (["shutdown", "reboot", "halt", "poweroff", "init"].includes(cmd)) return true;
@@ -227,12 +317,15 @@ const OFF_COMMANDS = new Set([
   // Pipeline utilities
   "xargs", "tee", "sort", "uniq", "cut", "awk", "sed", "tr", "column", "paste", "join",
   "comm", "diff", "cmp", "patch",
+  // Shell test commands (read-only conditionals)
+  "test", "[", "[[", "true", "false",
 ]);
 
 const OFF_GIT_SUBCOMMANDS = new Set([
   "status", "log", "diff", "show", "branch", "remote", "tag",
   "ls-files", "ls-tree", "cat-file", "rev-parse", "describe",
   "shortlog", "blame", "annotate", "whatchanged", "reflog",
+  "fetch", // read-only: just downloads refs, doesn't change working tree
 ]);
 
 const OFF_PACKAGE_SUBCOMMANDS: Record<string, Set<string>> = {
@@ -274,6 +367,17 @@ function isOffLevel(tokens: string[]): boolean {
 
   // Git read operations
   if (cmd === "git" && subCmd && OFF_GIT_SUBCOMMANDS.has(subCmd)) {
+    // Some git commands are only read-only without additional args
+    // e.g., "git branch" lists branches (off), "git branch new" creates (medium)
+    // e.g., "git tag" lists tags (off), "git tag v1.0" creates (medium)
+    const READ_ONLY_WITHOUT_ARGS = new Set(["branch", "tag", "remote"]);
+    if (READ_ONLY_WITHOUT_ARGS.has(subCmd)) {
+      // Check if there are args beyond flags (starting with -)
+      const nonFlagArgs = tokens.slice(2).filter(t => !t.startsWith("-"));
+      if (nonFlagArgs.length > 0) {
+        return false; // Has args, not read-only
+      }
+    }
     return true;
   }
 
@@ -285,76 +389,73 @@ function isOffLevel(tokens: string[]): boolean {
   return false;
 }
 
-// MEDIUM level - dev operations
+// MEDIUM level - build/install/test operations only (NOT running code)
 const MEDIUM_PACKAGE_PATTERNS: Array<[string, RegExp]> = [
-  // Node.js
-  ["npm", /^(install|ci|add|remove|uninstall|update|rebuild|dedupe|prune|link|pack|run|test|start|build|exec)$/],
-  ["yarn", /^(install|add|remove|upgrade|import|link|pack|run|test|start|build|dlx)?$/],
-  ["pnpm", /^(install|add|remove|update|link|pack|run|test|start|build|dlx|exec)$/],
-  ["bun", /^(install|add|remove|update|link|run|test|build|x)$/],
-  ["npx", /./], // npx anything
-  ["bunx", /./],
-  ["pnpx", /./],
+  // Node.js - install, build, test only (NOT run/start/exec which execute arbitrary code)
+  ["npm", /^(install|ci|add|remove|uninstall|update|rebuild|dedupe|prune|link|pack|test|build)$/],
+  ["yarn", /^(install|add|remove|upgrade|import|link|pack|test|build)$/],
+  ["pnpm", /^(install|add|remove|update|link|pack|test|build)$/],
+  ["bun", /^(install|add|remove|update|link|test|build)$/],
+  // npx/bunx/pnpx run arbitrary packages - HIGH (not included here)
 
-  // Python
+  // Python - install/build only (NOT running scripts)
   ["pip", /^install$/],
   ["pip3", /^install$/],
   ["pipenv", /^(install|update|sync|lock|uninstall)$/],
   ["poetry", /^(install|add|remove|update|lock|build)$/],
   ["conda", /^(install|update|remove|create)$/],
   ["uv", /^(pip|sync|lock)$/],
-  ["python", /./],
-  ["python3", /./],
-  ["pytest", /./],
+  // python/python3 run arbitrary code - HIGH (not included here)
+  ["pytest", /./], // test runner is safe
 
-  // Rust
-  ["cargo", /^(install|add|remove|fetch|update|build|run|test|check|clippy|fmt|doc|bench|clean)$/],
-  ["rustc", /./],
+  // Rust - build/test/lint only (NOT cargo run)
+  ["cargo", /^(install|add|remove|fetch|update|build|test|check|clippy|fmt|doc|bench|clean)$/],
   ["rustfmt", /./],
+  // rustc compiles but doesn't run - medium
+  ["rustc", /./],
 
-  // Go
-  ["go", /^(get|mod|build|run|test|generate|fmt|vet|clean|install)$/],
+  // Go - build/test only (NOT go run)
+  ["go", /^(get|mod|build|test|generate|fmt|vet|clean|install)$/],
   ["gofmt", /./],
 
-  // Ruby
+  // Ruby - install/build only
   ["gem", /^install$/],
-  ["bundle", /^(install|update|add|remove|exec|binstubs)$/],
-  ["bundler", /^(install|update|add|remove|exec)$/],
-  ["rake", /./],
-  ["rails", /^(generate|g|db|server|s|console|c|test|t)$/],
-  ["rspec", /./],
+  ["bundle", /^(install|update|add|remove|binstubs)$/],
+  ["bundler", /^(install|update|add|remove)$/],
+  // rake/rails can run arbitrary code - HIGH (not included here)
+  ["rspec", /./], // test runner
 
-  // PHP
-  ["composer", /^(install|require|remove|update|dump-autoload|run-script)$/],
-  ["php", /./],
-  ["phpunit", /./],
-  ["artisan", /./],
+  // PHP - install only
+  ["composer", /^(install|require|remove|update|dump-autoload)$/],
+  // php runs code - HIGH (not included here)
+  ["phpunit", /./], // test runner
 
-  // Java/Kotlin
+  // Java/Kotlin - compile/test only (NOT run)
   ["mvn", /^(install|compile|test|package|clean|dependency|verify)$/],
-  ["gradle", /^(build|test|clean|assemble|dependencies|run|check)$/],
-  ["gradlew", /./],
+  ["gradle", /^(build|test|clean|assemble|dependencies|check)$/],
+  // gradlew can run arbitrary tasks - HIGH (not included here)
 
-  // .NET
-  ["dotnet", /^(restore|add|build|test|run|clean|publish|pack|new|watch)$/],
+  // .NET - build/test only (NOT run/watch)
+  ["dotnet", /^(restore|add|build|test|clean|publish|pack|new)$/],
   ["nuget", /^install$/],
 
-  // Dart/Flutter
-  ["dart", /^(pub|run|compile|test|analyze|format|fix)$/],
-  ["flutter", /^(pub|build|run|test|analyze|clean|create|doctor)$/],
-  ["pub", /^(get|upgrade|downgrade|cache|deps|run)$/],
+  // Dart/Flutter - build/test only (NOT run)
+  ["dart", /^(pub|compile|test|analyze|format|fix)$/],
+  ["flutter", /^(pub|build|test|analyze|clean|create|doctor)$/],
+  ["pub", /^(get|upgrade|downgrade|cache|deps)$/],
 
-  // Swift
-  ["swift", /^(package|build|test|run)$/],
+  // Swift - build/test only (NOT run)
+  ["swift", /^(package|build|test)$/],
   ["swiftc", /./],
 
-  // Elixir
-  ["mix", /^(deps|compile|test|run|ecto|phx)$/],
-  ["elixir", /./],
+  // Elixir - build/test only (NOT run)
+  ["mix", /^(deps|compile|test|ecto|phx\.gen)$/],
+  // elixir runs code - HIGH (not included here)
 
-  // Haskell
-  ["cabal", /^(install|build|test|run|update)$/],
-  ["stack", /^(install|build|test|run|setup)$/],
+  // Haskell - build/test only (NOT run)
+  ["cabal", /^(install|build|test|update)$/],
+  ["stack", /^(install|build|test|setup)$/],
+  // ghc compiles but doesn't run - medium
   ["ghc", /./],
 
   // Others
@@ -394,22 +495,68 @@ const MEDIUM_PACKAGE_PATTERNS: Array<[string, RegExp]> = [
 ];
 
 const MEDIUM_GIT_SUBCOMMANDS = new Set([
-  "add", "commit", "pull", "fetch", "checkout", "switch", "branch",
+  "add", "commit", "pull", "checkout", "switch", "branch",
   "merge", "rebase", "cherry-pick", "stash", "revert", "tag",
-  "clean", "restore", "rm", "mv", "reset", // reset without --hard
+  "rm", "mv", "reset", "clone", // reset without --hard, clone is reversible
+  // NOT included (irreversible):
+  // - clean: permanently deletes untracked files
+  // - restore: can discard uncommitted changes permanently
 ]);
+
+// Safe npm/yarn/pnpm/bun run scripts (build, test, lint - not dev, start, serve)
+const SAFE_RUN_SCRIPTS = new Set([
+  "build", "compile", "test", "lint", "format", "fmt", "check", "typecheck",
+  "type-check", "types", "validate", "verify", "prepare", "prepublish",
+  "prepublishOnly", "prepack", "postpack", "clean", "lint:fix", "format:check",
+  "build:prod", "build:dev", "build:production", "build:development",
+  "test:unit", "test:integration", "test:e2e", "test:coverage",
+]);
+
+// Scripts that run servers or arbitrary code
+const UNSAFE_RUN_SCRIPTS = new Set([
+  "start", "dev", "develop", "serve", "server", "watch", "preview",
+  "start:dev", "start:prod", "dev:server",
+]);
+
+function isSafeRunScript(script: string): boolean {
+  const s = script.toLowerCase();
+  // Check explicit safe list
+  if (SAFE_RUN_SCRIPTS.has(s)) return true;
+  // Check if starts with safe prefix
+  if (s.startsWith("build") || s.startsWith("test") || s.startsWith("lint") || 
+      s.startsWith("format") || s.startsWith("check") || s.startsWith("type")) {
+    return true;
+  }
+  // Check explicit unsafe list
+  if (UNSAFE_RUN_SCRIPTS.has(s)) return false;
+  // Check unsafe prefixes
+  if (s.startsWith("start") || s.startsWith("dev") || s.startsWith("serve") || 
+      s.startsWith("watch")) {
+    return false;
+  }
+  // Default: unknown scripts are unsafe
+  return false;
+}
 
 function isMediumLevel(tokens: string[]): boolean {
   if (tokens.length === 0) return false;
 
   const cmd = getCommandName(tokens);
   const subCmd = tokens.length > 1 ? tokens[1].toLowerCase() : "";
+  const thirdArg = tokens.length > 2 ? tokens[2] : "";
 
   // Git local operations (not push)
   if (cmd === "git") {
     if (subCmd === "push") return false; // push is HIGH
     if (subCmd === "reset" && tokens.includes("--hard")) return false; // hard reset is HIGH
     if (MEDIUM_GIT_SUBCOMMANDS.has(subCmd)) return true;
+  }
+
+  // Handle npm/yarn/pnpm/bun run <script> specially
+  if (["npm", "yarn", "pnpm", "bun"].includes(cmd) && subCmd === "run") {
+    // Need a script name
+    if (!thirdArg || thirdArg.startsWith("-")) return false;
+    return isSafeRunScript(thirdArg);
   }
 
   // Package managers and build tools
@@ -467,6 +614,14 @@ function classifySegment(tokens: string[]): Classification {
     return { level: "off", dangerous: false };
   }
 
+  const cmd = getCommandName(tokens);
+
+  // Shell execution commands that can run arbitrary code - always HIGH
+  // These bypass normal command classification since they execute their arguments
+  if (SHELL_EXECUTION_COMMANDS.has(cmd)) {
+    return { level: "high", dangerous: false };
+  }
+
   if (isDangerousCommand(tokens)) {
     return { level: "high", dangerous: true };
   }
@@ -489,6 +644,12 @@ function classifySegment(tokens: string[]): Classification {
 
 export function classifyCommand(command: string): Classification {
   const parsed = parseCommand(command);
+
+  // If command contains shell tricks (command substitution, backticks, etc.),
+  // require HIGH level as we cannot reliably classify the embedded commands
+  if (parsed.hasShellTricks) {
+    return { level: "high", dangerous: false };
+  }
 
   let maxLevel: PermissionLevel = "off";
   let dangerous = false;

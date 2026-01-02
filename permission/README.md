@@ -73,44 +73,56 @@ Global settings stored in `~/.pi/agent/settings.json`:
 
 ## Command Classification
 
+The principle: **building/installing is MEDIUM, running code is HIGH**.
+
 ### Off Level (Read-only)
 - File reading: `cat`, `less`, `head`, `tail`, `bat`
 - Directory: `ls`, `tree`, `pwd`, `find`, `fd`
 - Search: `grep`, `rg`, `ag`
 - Info: `echo`, `whoami`, `date`, `uname`, `ps`, `env`
-- Git read: `git status`, `git log`, `git diff`, `git show`, `git branch`
+- Git read: `git status`, `git log`, `git diff`, `git show`, `git branch`, `git fetch`
 - Package info: `npm list`, `pip list`, `cargo tree`
 
-### Medium Level (Dev Operations)
-- **Node.js**: `npm install/run/test`, `yarn`, `pnpm`, `bun`
-- **Python**: `pip install`, `poetry`, `pytest`, `python`
-- **Rust**: `cargo build/test/run`
-- **Go**: `go build/test/run`, `go get`
-- **Ruby**: `gem install`, `bundle`, `rake`, `rails`
-- **PHP**: `composer install`, `php`, `artisan`
-- **Java**: `mvn`, `gradle`
-- **.NET**: `dotnet build/test/run`
-- **Dart/Flutter**: `dart pub get`, `flutter build/run`
-- **Git local**: `git add`, `git commit`, `git pull`, `git checkout`, `git merge`
+### Medium Level (Build/Install/Test - Reversible)
+- **Node.js**: `npm install/ci/test/build`, `yarn install/add/build/test`, `pnpm`, `bun`
+- **npm run** (safe scripts only): `build`, `test`, `lint`, `format`, `check`, `typecheck`
+- **Python**: `pip install`, `poetry install/build`, `pytest`
+- **Rust**: `cargo build/test/check/clippy/fmt` (NOT `cargo run`)
+- **Go**: `go build/test/get/mod` (NOT `go run`)
+- **Ruby**: `gem install`, `bundle install`
+- **PHP**: `composer install`
+- **Java**: `mvn compile/test`, `gradle build/test`
+- **.NET**: `dotnet build/test`
+- **Git local**: `git add`, `git commit`, `git pull`, `git checkout`, `git merge`, `git clone`
 - **Build tools**: `make`, `cmake`, `ninja`
-- **Linters**: `eslint`, `prettier`, `black`, `rustfmt`
+- **Linters**: `eslint`, `prettier`, `black`, `rustfmt`, `mypy`
 - **File ops**: `mkdir`, `touch`, `cp`, `mv`
 
-### High Level (Full Operations)
-- `git push`
-- `git reset --hard`
-- `curl`/`wget` (especially piped to shell)
-- `docker push`
-- `kubectl`, `helm`, `terraform`
-- `ssh`, `scp`, `rsync`
+### High Level (Runs Code / Irreversible)
+- **Running code**: `python script.py`, `node app.js`, `cargo run`, `go run`
+- **npm run** (unsafe scripts): `dev`, `start`, `serve`, `watch`, `preview`
+- **Package executors**: `npx`, `bunx`, `pnpx` (run arbitrary packages)
+- **Git remote**: `git push`, `git push --force`
+- **Git irreversible**: `git reset --hard`, `git clean`, `git restore`
+- **Network**: `curl`, `wget` (can't verify trusted endpoints)
+- **Deployment**: `docker push`, `kubectl`, `helm`, `terraform`
+- **Remote access**: `ssh`, `scp`, `rsync`
+- **Shell execution**: `eval`, `exec`, `source`, `xargs`
 
 ### Dangerous (Always Prompt)
 - `sudo` (any form)
 - `rm` with `-r` AND `-f` flags
 - `chmod 777` or `a+rwx`
 - `dd of=/dev/...`
-- `mkfs`, `fdisk`, `parted`
-- `shutdown`, `reboot`
+- `mkfs`, `mkfs.ext4`, `fdisk`, `parted`
+- `shutdown`, `reboot`, `halt`, `poweroff`
+
+## Shell Trick Detection
+
+Commands containing these patterns require HIGH permission:
+- Command substitution: `$(cmd)`, `` `cmd` ``
+- Process substitution: `<(cmd)`, `>(cmd)`
+- Dangerous expansions: `${VAR:-$(cmd)}` (nested command substitution)
 
 ## Installation
 

@@ -203,7 +203,7 @@ User can re-run with: PI_PERMISSION_LEVEL=bypassed pi -p "..."`
 
     playPermissionSound();
     const choice = await ctx.ui.select(
-      `⚠️ Dangerous command:\n\n  ${command}\n`,
+      `⚠️ Dangerous command`,
       ["Allow once", "Cancel"]
     );
 
@@ -235,7 +235,7 @@ User can re-run with: PI_PERMISSION_LEVEL=${requiredLevel} pi -p "..."`
   // Interactive mode: prompt
   playPermissionSound();
   const choice = await ctx.ui.select(
-    `Requires ${requiredInfo.label}: ${command}`,
+    `Requires ${requiredInfo.label}`,
     ["Allow once", `Allow all (${requiredInfo.label})`, "Cancel"]
   );
 
