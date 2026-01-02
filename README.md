@@ -2,6 +2,21 @@
 
 Minimal reference hooks for [`pi-coding-agent`](https://www.npmjs.com/package/@mariozechner/pi-coding-agent).
 
+## Quick Setup
+
+Add to `~/.pi/agent/settings.json`:
+```json
+{
+  "hooks": [
+    "/path/to/pi-hooks/checkpoint/checkpoint.ts",
+    "/path/to/pi-hooks/lsp/lsp.ts",
+    "/path/to/pi-hooks/permission/permission.ts"
+  ]
+}
+```
+
+Then run `npm install` in `lsp/` and `permission/` directories.
+
 ## Included hooks
 
 ### `checkpoint/`
@@ -13,7 +28,7 @@ Git-based checkpoint system for restoring code state when branching conversation
 - Offers restore options: files + conversation, conversation only, or files only
 - Automatically saves current state before restoring past snapshots
 
-![Checkpoint Hook](assets/checkpoint-screenshot.png)
+<img src="assets/checkpoint-screenshot.png" alt="Checkpoint Hook" width="500">
 
 ### `lsp/`
 
@@ -23,7 +38,7 @@ Language Server Protocol diagnostics after file changes.
 - Supports web, Flutter, and common backend stacks
 - Manages LSP server lifecycles per project root
 
-![LSP Hook](assets/lsp-screenshot.png)
+<img src="assets/lsp-screenshot.png" alt="LSP Hook" width="500">
 
 ### `permission/`
 
@@ -38,7 +53,7 @@ Layered permission control with four permission levels:
 
 On first run you pick a level; it's saved globally. You can escalate mid-session when needed.
 
-![Permission Hook](assets/permission-screenshot.png)
+<img src="assets/permission-screenshot.png" alt="Permission Hook" width="500">
 
 ## Usage
 
