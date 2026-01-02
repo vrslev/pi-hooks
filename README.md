@@ -32,20 +32,20 @@ Layered permission control with four permission levels:
 | Level  | Description           | What's allowed                                      |
 |--------|-----------------------|-----------------------------------------------------|
 | Off    | Read-only mode        | Only read commands (ls, cat, git status, etc.)      |
-| Low    | File edits            | + write/edit files within project                   |
+| Low    | File edits            | + write/edit files                                  |
 | Medium | Dev commands          | + npm, git, make, cargo, etc.                       |
 | High   | Full access           | Everything (dangerous commands still prompt)        |
 
-On first run you pick a level; it's saved per-project. You can escalate mid-session when needed.
+On first run you pick a level; it's saved globally. You can escalate mid-session when needed.
 
 ![Permission Hook](assets/permission-screenshot.png)
 
 ## Usage
 
-1. Install dependencies inside each hook directory:
+1. Install dependencies for hooks that need them:
    ```bash
-   cd checkpoint && npm install
-   cd ../lsp && npm install
+   cd lsp && npm install
+   cd ../permission && npm install
    ```
 
 2. **Project-scoped setup** (`.pi/hooks/`):
@@ -57,7 +57,15 @@ On first run you pick a level; it's saved per-project. You can escalate mid-sess
    ```
    pi automatically loads hooks from `.pi/hooks/`.
 
-3. **Global setup** (`~/.pi/agent/settings.json`):
+3. **Global setup** (`~/.pi/agent/hooks/`):
+   ```bash
+   mkdir -p ~/.pi/agent/hooks
+   cp checkpoint/checkpoint.ts ~/.pi/agent/hooks/
+   cp lsp/lsp.ts ~/.pi/agent/hooks/
+   cp permission/permission.ts ~/.pi/agent/hooks/
+   ```
+   
+   Or via `~/.pi/agent/settings.json`:
    ```json
    {
      "hooks": [

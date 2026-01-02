@@ -7,7 +7,7 @@ Layered permission control for pi-coding-agent.
 | Level | Description | Allowed Operations |
 |-------|-------------|-------------------|
 | **off** | Read-only (default) | `cat`, `ls`, `grep`, `git status/log/diff`, `npm list` |
-| **low** | File operations | + `write`/`edit` files in project |
+| **low** | File operations | + `write`/`edit` files |
 | **medium** | Dev operations | + `npm install`, `git commit`, build commands |
 | **high** | Full operations | + `git push`, deployments, scripts |
 
