@@ -4,7 +4,9 @@
   "description": "LSP diagnostics hook for pi-coding-agent - provides real-time language server feedback for Dart/Flutter, TypeScript, Vue, Svelte, and more",
   "main": "lsp-hook.ts",
   "scripts": {
-    "test": "echo \"No tests yet\" && exit 0"
+    "test": "npx tsx tests/lsp.test.ts",
+    "test:integration": "npx tsx tests/lsp-integration.test.ts",
+    "test:all": "npm test && npm run test:integration"
   },
   "keywords": [
     "lsp",

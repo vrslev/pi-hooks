@@ -5,8 +5,7 @@
  * with the pi-coding-agent hook system.
  */
 
-import { exec } from "child_process";
-import { readFile } from "fs/promises";
+import { spawn } from "child_process";
 import {
   isGitRepo,
   getRepoRoot,
@@ -78,6 +77,26 @@ export function resetRepoCache(): void {
   cachedRepoCwd = null;
 }
 
+/** Read first line of a file using head (efficient, doesn't load entire file) */
+function readFirstLine(filePath: string): Promise<string> {
+  return new Promise((resolve) => {
+    const proc = spawn("head", ["-1", filePath], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let data = "";
+    proc.stdout.on("data", (chunk) => (data += chunk));
+    proc.on("close", () => resolve(data.trim()));
+    proc.on("error", () => resolve(""));
+  });
+}
+
+/** Extract a JSON field from a line using regex (avoids JSON.parse overhead) */
+function extractJsonField(line: string, field: string): string | undefined {
+  const regex = new RegExp(`"${field}"\\s*:\\s*"([^"]*)"`, "i");
+  const match = line.match(regex);
+  return match?.[1] || undefined;
+}
+
 // ============================================================================
 // Session helpers
 // ============================================================================
@@ -87,9 +106,9 @@ export async function getSessionIdFromFile(
   sessionFile: string
 ): Promise<string> {
   try {
-    const content = await readFile(sessionFile, "utf-8");
-    if (content.trim()) {
-      const id = JSON.parse(content.split("\n")[0]).id || "";
+    const line = await readFirstLine(sessionFile);
+    if (line) {
+      const id = extractJsonField(line, "id") || "";
       if (isSafeId(id)) return id;
     }
   } catch {}
@@ -141,16 +160,9 @@ export async function loadSessionChainCheckpoints(
       sessionIds.push(match[1]);
     }
     try {
-      const { stdout } = await new Promise<{ stdout: string }>(
-        (resolve, reject) => {
-          exec(
-            `head -1 "${branchedFrom}" | grep -o '"branchedFrom":"[^"]*"' | cut -d'"' -f4`,
-            (err, stdout) =>
-              err ? reject(err) : resolve({ stdout: stdout || "" })
-          );
-        }
-      );
-      branchedFrom = stdout.trim() || undefined;
+      // Read first line efficiently and extract branchedFrom with regex
+      const line = await readFirstLine(branchedFrom);
+      branchedFrom = line ? extractJsonField(line, "branchedFrom") : undefined;
     } catch {
       break;
     }

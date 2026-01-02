@@ -16,12 +16,12 @@ import { parse } from "shell-quote";
 // TYPES
 // ============================================================================
 
-export type PermissionLevel = "off" | "low" | "medium" | "high" | "bypassed";
+export type PermissionLevel = "minimal" | "low" | "medium" | "high" | "bypassed";
 
-export const LEVELS: PermissionLevel[] = ["off", "low", "medium", "high", "bypassed"];
+export const LEVELS: PermissionLevel[] = ["minimal", "low", "medium", "high", "bypassed"];
 
 export const LEVEL_INDEX: Record<PermissionLevel, number> = {
-  off: 0,
+  minimal: 0,
   low: 1,
   medium: 2,
   high: 3,
@@ -29,7 +29,7 @@ export const LEVEL_INDEX: Record<PermissionLevel, number> = {
 };
 
 export const LEVEL_INFO: Record<PermissionLevel, { label: string; desc: string }> = {
-  off: { label: "Off", desc: "Read-only" },
+  minimal: { label: "Minimal", desc: "Read-only" },
   low: { label: "Low", desc: "File ops only" },
   medium: { label: "Medium", desc: "Dev operations" },
   high: { label: "High", desc: "Full operations" },
@@ -37,7 +37,7 @@ export const LEVEL_INFO: Record<PermissionLevel, { label: string; desc: string }
 };
 
 export const LEVEL_ALLOWED_DESC: Record<PermissionLevel, string> = {
-  off: "read-only (cat, ls, grep, git status/diff/log, npm list, version checks)",
+  minimal: "read-only (cat, ls, grep, git status/diff/log, npm list, version checks)",
   low: "read-only + file write/edit",
   medium: "dev ops (install packages, build, test, git commit/pull, file operations)",
   high: "full operations except dangerous commands",
@@ -97,12 +97,15 @@ interface ParsedCommand {
   segments: string[][]; // Commands split by operators
   operators: string[]; // |, &&, ||, ;
   raw: string;
+  hasShellTricks?: boolean;
+  /** Output redirections to non-special files (>, >>) */
+  writesFiles?: boolean;
 }
 
 // Shell execution commands that can run arbitrary code
 const SHELL_EXECUTION_COMMANDS = new Set([
   "eval", "exec", "source", ".", // shell builtins
-  "xargs", // can execute commands
+  // Note: xargs is handled in CONDITIONAL_WRITE_COMMANDS with smart logic
 ]);
 
 // Patterns that indicate command substitution or shell tricks in raw command
@@ -139,6 +142,15 @@ function detectShellTricks(command: string): boolean {
   return false;
 }
 
+// Output redirection operators that write to files
+const OUTPUT_REDIRECTION_OPS = new Set([">", ">>", ">|"]);
+
+// Safe redirection targets (not actual file writes)
+const SAFE_REDIRECTION_TARGETS = new Set([
+  "/dev/null", "/dev/stdout", "/dev/stderr",
+  "/dev/fd/1", "/dev/fd/2",
+]);
+
 function parseCommand(command: string): ParsedCommand {
   const hasShellTricks = detectShellTricks(command);
   
@@ -161,25 +173,50 @@ function parseCommand(command: string): ParsedCommand {
   const operators: string[] = [];
   let currentSegment: string[] = [];
   let foundCommandSubstitution = false;
+  let writesFiles = false;
 
   // Redirection operators - these don't start new command segments
   const REDIRECTION_OPS = new Set([">", "<", ">>", ">&", "<&", ">|", "<>"]);
-  let skipNextToken = false;
+  let pendingOutputRedirect = false;
 
-  for (const token of tokens) {
-    if (skipNextToken) {
-      // This token is a redirection target (file path), not a command
-      skipNextToken = false;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    
+    if (pendingOutputRedirect) {
+      // This token is a redirection target
+      pendingOutputRedirect = false;
+      if (typeof token === "string") {
+        // Check if this is writing to a real file (not /dev/null etc.)
+        if (!SAFE_REDIRECTION_TARGETS.has(token) && !token.startsWith("/dev/fd/")) {
+          writesFiles = true;
+        }
+      }
       continue;
     }
+    
     if (typeof token === "string") {
       currentSegment.push(token);
     } else if (token && typeof token === "object") {
       if ("op" in token) {
         const op = token.op as string;
         if (REDIRECTION_OPS.has(op)) {
-          // Redirection operator - skip the next token (file path)
-          skipNextToken = true;
+          // Check if this is an output redirection
+          if (OUTPUT_REDIRECTION_OPS.has(op)) {
+            pendingOutputRedirect = true;
+          } else {
+            // Input redirection or fd duplication - skip next token
+            // For >&, <& we need to check if it's fd duplication (2>&1) or file redirect
+            if (op === ">&" || op === "<&") {
+              const nextToken = tokens[i + 1];
+              if (typeof nextToken === "string" && /^\d+$/.test(nextToken)) {
+                // fd duplication like 2>&1, skip it
+                i++;
+              } else {
+                // File redirect like >&file
+                pendingOutputRedirect = true;
+              }
+            }
+          }
         } else {
           // Command separator like |, &&, ||, ;
           if (currentSegment.length > 0) {
@@ -209,7 +246,8 @@ function parseCommand(command: string): ParsedCommand {
     segments,
     operators,
     raw: command,
-    hasShellTricks: hasShellTricks || foundCommandSubstitution
+    hasShellTricks: hasShellTricks || foundCommandSubstitution,
+    writesFiles
   };
 }
 
@@ -299,14 +337,14 @@ const REDIRECTION_TARGETS = new Set([
 // File descriptor numbers used in redirections (e.g., 2>&1)
 const FD_NUMBERS = new Set(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]);
 
-// OFF level - read-only commands
-const OFF_COMMANDS = new Set([
+// MINIMAL level - read-only commands
+const MINIMAL_COMMANDS = new Set([
   // File reading
   "cat", "less", "more", "head", "tail", "bat", "tac",
   // Directory listing/navigation
   "ls", "tree", "pwd", "dir", "vdir", "cd", "pushd", "popd", "dirs",
-  // Search
-  "grep", "egrep", "fgrep", "rg", "ag", "ack", "find", "fd", "locate", "which", "whereis",
+  // Search (note: find handled specially due to -exec/-delete)
+  "grep", "egrep", "fgrep", "rg", "ag", "ack", "fd", "locate", "which", "whereis",
   // Info
   "echo", "printf", "whoami", "id", "date", "cal", "uname", "hostname", "uptime",
   "type", "file", "stat", "wc", "du", "df", "free",
@@ -314,21 +352,127 @@ const OFF_COMMANDS = new Set([
   "env", "printenv", "set",
   // Man/help
   "man", "help", "info",
-  // Pipeline utilities
-  "xargs", "tee", "sort", "uniq", "cut", "awk", "sed", "tr", "column", "paste", "join",
+  // Pipeline utilities (note: xargs, tee handled specially - they can write/execute)
+  "sort", "uniq", "cut", "awk", "sed", "tr", "column", "paste", "join",
   "comm", "diff", "cmp", "patch",
   // Shell test commands (read-only conditionals)
   "test", "[", "[[", "true", "false",
 ]);
 
-const OFF_GIT_SUBCOMMANDS = new Set([
+// Commands that can write files based on arguments
+// find: -exec, -execdir, -ok, -okdir, -delete can modify filesystem
+// xargs: executes commands with input as arguments (but safe if running read-only commands)
+// tee: writes to files (but read-only when used with /dev/null or --)
+
+/**
+ * Extract the command that xargs will execute.
+ * Parses xargs options to find the first non-option argument.
+ * Returns null if no command specified (xargs defaults to /bin/echo).
+ */
+function extractXargsCommand(tokens: string[]): string | null {
+  const args = tokens.slice(1); // Skip 'xargs' itself
+
+  // xargs options that consume the next argument
+  const OPTIONS_WITH_ARG = new Set(["-I", "-d", "-E", "-L", "-n", "-P", "-s", "-a"]);
+
+  let i = 0;
+  while (i < args.length) {
+    const arg = args[i];
+
+    // End of options marker
+    if (arg === "--") {
+      i++;
+      break;
+    }
+
+    // Not an option - this is the command
+    if (!arg.startsWith("-")) {
+      break;
+    }
+
+    // Long options (--null, --max-args=5, etc.)
+    if (arg.startsWith("--")) {
+      // Long options either are flags or use = for values, so just skip
+      i++;
+      continue;
+    }
+
+    // Short option that takes a required argument
+    // Could be: -I {} (separate) or -I{} (attached)
+    const optLetter = arg.substring(0, 2); // e.g., "-I"
+    if (OPTIONS_WITH_ARG.has(optLetter)) {
+      if (arg.length > 2) {
+        // Argument attached: -I{} or -n10
+        i++;
+      } else {
+        // Argument is next token: -I {}
+        i += 2;
+      }
+      continue;
+    }
+
+    // -i and -e can have optional attached argument (deprecated forms)
+    // -i[replstr], -e[eof-str]
+    if (arg.startsWith("-i") || arg.startsWith("-e")) {
+      i++;
+      continue;
+    }
+
+    // Other short options are flags (can be combined): -0, -t, -p, -r, -x
+    // e.g., -0tr means -0 -t -r
+    i++;
+  }
+
+  // Return the command if found
+  if (i < args.length) {
+    const cmd = args[i];
+    // Strip path prefix (e.g., /usr/bin/cat -> cat)
+    if (cmd.includes("/")) {
+      return cmd.split("/").pop()?.toLowerCase() || null;
+    }
+    return cmd.toLowerCase();
+  }
+
+  // No command found - xargs defaults to /bin/echo (safe)
+  return null;
+}
+
+const CONDITIONAL_WRITE_COMMANDS: Record<string, (tokens: string[]) => boolean> = {
+  find: (tokens) => {
+    const dangerousFlags = ["-exec", "-execdir", "-ok", "-okdir", "-delete"];
+    return tokens.some(t => dangerousFlags.includes(t.toLowerCase()));
+  },
+  xargs: (tokens) => {
+    // xargs executes commands with input as arguments
+    // Safe if running a read-only command from MINIMAL_COMMANDS
+    const xargsCmd = extractXargsCommand(tokens);
+
+    // No command = defaults to /bin/echo (safe, just prints)
+    if (xargsCmd === null) return false;
+
+    // Check if the command xargs will run is read-only
+    if (MINIMAL_COMMANDS.has(xargsCmd)) return false;
+
+    // Unknown or non-minimal command - not safe
+    return true;
+  },
+  tee: (tokens) => {
+    // tee writes to files unless only used with /dev/null or --
+    const args = tokens.slice(1).filter(t => !t.startsWith("-"));
+    if (args.length === 0) return false; // tee with no file args writes to stdout only
+    // Check if all file args are /dev/null
+    return !args.every(a => a === "/dev/null");
+  },
+};
+
+const MINIMAL_GIT_SUBCOMMANDS = new Set([
   "status", "log", "diff", "show", "branch", "remote", "tag",
   "ls-files", "ls-tree", "cat-file", "rev-parse", "describe",
   "shortlog", "blame", "annotate", "whatchanged", "reflog",
   "fetch", // read-only: just downloads refs, doesn't change working tree
 ]);
 
-const OFF_PACKAGE_SUBCOMMANDS: Record<string, Set<string>> = {
+const MINIMAL_PACKAGE_SUBCOMMANDS: Record<string, Set<string>> = {
   npm: new Set(["list", "ls", "info", "view", "outdated", "audit", "explain", "why", "search"]),
   yarn: new Set(["list", "info", "why", "outdated", "audit"]),
   pnpm: new Set(["list", "ls", "outdated", "audit", "why"]),
@@ -344,7 +488,7 @@ const OFF_PACKAGE_SUBCOMMANDS: Record<string, Set<string>> = {
   dart: new Set(["info"]),
 };
 
-function isOffLevel(tokens: string[]): boolean {
+function isMinimalLevel(tokens: string[]): boolean {
   if (tokens.length === 0) return true;
 
   const cmd = getCommandName(tokens);
@@ -357,8 +501,19 @@ function isOffLevel(tokens: string[]): boolean {
   // Check if this is a common redirection target (e.g., /dev/null)
   if (REDIRECTION_TARGETS.has(fullCmd)) return true;
 
+  // Check conditional write commands (find with -exec, xargs, tee with files)
+  const conditionalCheck = CONDITIONAL_WRITE_COMMANDS[cmd];
+  if (conditionalCheck) {
+    // If the command would write/execute, it's not minimal level
+    if (conditionalCheck(tokens)) {
+      return false;
+    }
+    // Otherwise it's safe (e.g., find without -exec, tee to /dev/null)
+    return true;
+  }
+
   // Basic read-only commands
-  if (OFF_COMMANDS.has(cmd)) return true;
+  if (MINIMAL_COMMANDS.has(cmd)) return true;
 
   // Version checks
   if (tokens.includes("--version") || tokens.includes("-v") || tokens.includes("-V")) {
@@ -366,10 +521,10 @@ function isOffLevel(tokens: string[]): boolean {
   }
 
   // Git read operations
-  if (cmd === "git" && subCmd && OFF_GIT_SUBCOMMANDS.has(subCmd)) {
+  if (cmd === "git" && subCmd && MINIMAL_GIT_SUBCOMMANDS.has(subCmd)) {
     // Some git commands are only read-only without additional args
-    // e.g., "git branch" lists branches (off), "git branch new" creates (medium)
-    // e.g., "git tag" lists tags (off), "git tag v1.0" creates (medium)
+    // e.g., "git branch" lists branches (minimal), "git branch new" creates (medium)
+    // e.g., "git tag" lists tags (minimal), "git tag v1.0" creates (medium)
     const READ_ONLY_WITHOUT_ARGS = new Set(["branch", "tag", "remote"]);
     if (READ_ONLY_WITHOUT_ARGS.has(subCmd)) {
       // Check if there are args beyond flags (starting with -)
@@ -382,7 +537,7 @@ function isOffLevel(tokens: string[]): boolean {
   }
 
   // Package manager read operations
-  if (OFF_PACKAGE_SUBCOMMANDS[cmd]?.has(subCmd)) {
+  if (MINIMAL_PACKAGE_SUBCOMMANDS[cmd]?.has(subCmd)) {
     return true;
   }
 
@@ -611,7 +766,7 @@ function isHighLevel(tokens: string[]): boolean {
 
 function classifySegment(tokens: string[]): Classification {
   if (tokens.length === 0) {
-    return { level: "off", dangerous: false };
+    return { level: "minimal", dangerous: false };
   }
 
   const cmd = getCommandName(tokens);
@@ -626,8 +781,8 @@ function classifySegment(tokens: string[]): Classification {
     return { level: "high", dangerous: true };
   }
 
-  if (isOffLevel(tokens)) {
-    return { level: "off", dangerous: false };
+  if (isMinimalLevel(tokens)) {
+    return { level: "minimal", dangerous: false };
   }
 
   if (isMediumLevel(tokens)) {
@@ -651,8 +806,13 @@ export function classifyCommand(command: string): Classification {
     return { level: "high", dangerous: false };
   }
 
-  let maxLevel: PermissionLevel = "off";
+  let maxLevel: PermissionLevel = "minimal";
   let dangerous = false;
+
+  // If command writes to files via redirection (>, >>), require at least LOW
+  if (parsed.writesFiles) {
+    maxLevel = "low";
+  }
 
   for (let i = 0; i < parsed.segments.length; i++) {
     const segment = parsed.segments[i];

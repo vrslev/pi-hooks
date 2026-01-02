@@ -10,6 +10,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import {
   createMessageConnection,
   StreamMessageReader,
@@ -226,8 +227,10 @@ export const LSP_SERVERS: LSPServerConfig[] = [
     id: "gopls",
     extensions: [".go"],
     findRoot: (file, cwd) => {
+      // First check for go.work (workspace root)
       const workRoot = findRoot(file, cwd, ["go.work"]);
-      if (workRoot !== cwd) return workRoot;
+      if (workRoot) return workRoot;
+      // Fall back to go.mod
       return findRoot(file, cwd, ["go.mod"]);
     },
     spawn: simpleSpawn("gopls", []),
@@ -276,6 +279,13 @@ export class LSPManager {
         new StreamMessageWriter(handle.process.stdin!)
       );
 
+      // Drain stderr to prevent potential deadlock from buffer fill-up
+      if (handle.process.stderr) {
+        handle.process.stderr.on("data", () => {
+          // Discard stderr data - just drain the buffer
+        });
+      }
+
       const client: LSPClient = {
         connection,
         process: handle.process,
@@ -303,7 +313,7 @@ export class LSPManager {
       connection.onRequest("client/registerCapability", () => {});
       connection.onRequest("client/unregisterCapability", () => {});
       connection.onRequest("workspace/workspaceFolders", () => [
-        { name: "workspace", uri: `file://${root}` },
+        { name: "workspace", uri: pathToFileURL(root).href },
       ]);
 
       handle.process.on("exit", () => this.clients.delete(key));
@@ -316,13 +326,13 @@ export class LSPManager {
 
       await withTimeout(
         connection.sendRequest("initialize", {
-          rootUri: `file://${root}`,
+          rootUri: pathToFileURL(root).href,
           processId: process.pid,
-          workspaceFolders: [{ name: "workspace", uri: `file://${root}` }],
+          workspaceFolders: [{ name: "workspace", uri: pathToFileURL(root).href }],
           initializationOptions: handle.initializationOptions ?? {},
           capabilities: {
             window: { workDoneProgress: true },
-            workspace: { configuration: true, workspaceFolders: true },
+            workspace: { configuration: true },
             textDocument: {
               synchronization: { didOpen: true, didChange: true, didClose: true },
               publishDiagnostics: { versionSupport: true },
@@ -389,7 +399,7 @@ export class LSPManager {
     const clients = await this.getClientsForFile(absPath);
     if (clients.length === 0) return [];
 
-    const uri = `file://${absPath}`;
+    const uri = pathToFileURL(absPath).href;
     const languageId = LANGUAGE_IDS[path.extname(filePath)] || "plaintext";
 
     let content: string;

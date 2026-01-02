@@ -5,7 +5,7 @@
  * It has no dependencies on the pi-coding-agent hook system.
  */
 
-import { exec, spawn } from "child_process";
+import { spawn } from "child_process";
 import { mkdtemp, rm } from "fs/promises";
 import { statSync, readdirSync } from "fs";
 import { tmpdir } from "os";
@@ -64,19 +64,76 @@ export interface CheckpointData {
 // Git helpers
 // ============================================================================
 
+/**
+ * Parse a command string into arguments, handling quotes.
+ * This avoids shell injection by not using shell execution.
+ */
+function parseArgs(cmd: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+
+  for (let i = 0; i < cmd.length; i++) {
+    const char = cmd[i];
+
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+    } else if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+    } else if (char === " " && !inSingleQuote && !inDoubleQuote) {
+      if (current) {
+        args.push(current);
+        current = "";
+      }
+    } else {
+      current += char;
+    }
+  }
+  if (current) args.push(current);
+
+  return args;
+}
+
 export function git(
   cmd: string,
   cwd: string,
   opts: { env?: NodeJS.ProcessEnv; input?: string } = {}
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = exec(
-      `git ${cmd}`,
-      { cwd, env: opts.env, maxBuffer: 10 * 1024 * 1024 },
-      (error, stdout) => (error ? reject(error) : resolve(stdout.trim()))
-    );
+    const args = parseArgs(cmd);
+
+    const proc = spawn("git", args, {
+      cwd,
+      env: opts.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout.on("data", (data) => {
+      stdout += data;
+    });
+
+    proc.stderr.on("data", (data) => {
+      stderr += data;
+    });
+
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve(stdout.trim());
+      } else {
+        reject(new Error(stderr || `git ${cmd} failed with code ${code}`));
+      }
+    });
+
+    proc.on("error", reject);
+
     if (opts.input && proc.stdin) {
       proc.stdin.write(opts.input);
+      proc.stdin.end();
+    } else if (proc.stdin) {
       proc.stdin.end();
     }
   });
@@ -85,20 +142,7 @@ export function git(
 /** Low-priority git command using spawn (doesn't block shell) */
 export function gitLowPriority(cmd: string, cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const args: string[] = [];
-    let current = "";
-    let inQuote = false;
-    for (const char of cmd) {
-      if (char === "'" || char === '"') {
-        inQuote = !inQuote;
-      } else if (char === " " && !inQuote) {
-        if (current) args.push(current);
-        current = "";
-      } else {
-        current += char;
-      }
-    }
-    if (current) args.push(current);
+    const args = parseArgs(cmd);
 
     const proc = spawn("git", args, {
       cwd,

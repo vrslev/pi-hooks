@@ -50,7 +50,7 @@ const CYAN = "\x1b[36m";
 const DIM = "\x1b[2m";
 
 const LEVEL_COLORS: Record<PermissionLevel, string> = {
-  off: RED,
+  minimal: RED,
   low: YELLOW,
   medium: CYAN,
   high: GREEN,
@@ -73,7 +73,7 @@ export interface PermissionState {
 }
 
 export function createInitialState(): PermissionState {
-  return { currentLevel: "off", isSessionOnly: false };
+  return { currentLevel: "minimal", isSessionOnly: false };
 }
 
 function setLevel(

@@ -6,7 +6,7 @@ Layered permission control for pi-coding-agent.
 
 | Level | Description | Allowed Operations |
 |-------|-------------|-------------------|
-| **off** | Read-only (default) | `cat`, `ls`, `grep`, `git status/log/diff`, `npm list` |
+| **minimal** | Read-only (default) | `cat`, `ls`, `grep`, `git status/log/diff`, `npm list` |
 | **low** | File operations | + `write`/`edit` files |
 | **medium** | Dev operations | + `npm install`, `git commit`, build commands |
 | **high** | Full operations | + `git push`, deployments, scripts |
@@ -48,7 +48,7 @@ PI_PERMISSION_LEVEL=bypassed pi -p "do anything"
 **If permission is insufficient:**
 The command is blocked but execution continues. The agent receives:
 ```
-Blocked by permission (off). Command: npm install lodash
+Blocked by permission (minimal). Command: npm install lodash
 Allowed at this level: read-only (cat, ls, grep, git status/diff/log, npm list, version checks)
 User can re-run with: PI_PERMISSION_LEVEL=medium pi -p "..."
 ```
@@ -59,7 +59,7 @@ The agent can then work around the limitation or inform the user.
 
 | Variable | Values | Description |
 |----------|--------|-------------|
-| `PI_PERMISSION_LEVEL` | `off`, `low`, `medium`, `high`, `bypassed` | Set permission level |
+| `PI_PERMISSION_LEVEL` | `minimal`, `low`, `medium`, `high`, `bypassed` | Set permission level |
 
 ## Settings
 
@@ -75,7 +75,7 @@ Global settings stored in `~/.pi/agent/settings.json`:
 
 The principle: **building/installing is MEDIUM, running code is HIGH**.
 
-### Off Level (Read-only)
+### Minimal Level (Read-only)
 - File reading: `cat`, `less`, `head`, `tail`, `bat`
 - Directory: `ls`, `tree`, `pwd`, `find`, `fd`
 - Search: `grep`, `rg`, `ag`

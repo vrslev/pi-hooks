@@ -20,6 +20,10 @@ Language Server Protocol diagnostics for pi-coding-agent.
 | Go | `gopls` | `go.mod` |
 | Rust | `rust-analyzer` | `Cargo.toml` |
 
+### Known Limitations
+
+**rust-analyzer**: Very slow to initialize (30-60+ seconds) because it compiles the entire Rust project before returning diagnostics. This is a known rust-analyzer behavior, not a bug in this hook. For quick feedback, consider using `cargo check` directly.
+
 ## Usage
 
 ### Installation
@@ -84,6 +88,19 @@ The hook spawns binaries from your PATH.
 | `lsp.ts` | Hook entry point |
 | `lsp-hook.ts` | Event handlers and state management |
 | `lsp-core.ts` | LSPManager class and server configurations |
+
+## Testing
+
+```bash
+# Unit tests (root detection, configuration)
+npm test
+
+# Integration tests (spawns real language servers)
+npm run test:integration
+
+# Run rust-analyzer tests (slow, disabled by default)
+RUST_LSP_TEST=1 npm run test:integration
+```
 
 ## License
 

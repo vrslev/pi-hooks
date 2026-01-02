@@ -13,9 +13,9 @@
  *   Use PI_PERMISSION_LEVEL=bypassed for CI/containers (dangerous!)
  *
  * Levels:
- *   off    - Read-only mode (default)
- *            ✅ Read files, ls, grep, git status/log/diff
- *            ❌ No file modifications, no commands with side effects
+ *   minimal - Read-only mode (default)
+ *             ✅ Read files, ls, grep, git status/log/diff
+ *             ❌ No file modifications, no commands with side effects
  *
  *   low    - File operations only
  *            ✅ Create/edit files in project directory

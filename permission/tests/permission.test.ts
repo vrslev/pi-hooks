@@ -63,115 +63,115 @@ async function runTests() {
 }
 
 // ============================================================================
-// OFF level tests - read-only commands
+// MINIMAL level tests - read-only commands
 // ============================================================================
 
-test("off: file reading commands", async () => {
-  assertLevel("cat file.txt", "off");
-  assertLevel("less file.txt", "off");
-  assertLevel("more file.txt", "off");
-  assertLevel("head -n 10 file.txt", "off");
-  assertLevel("tail -f log.txt", "off");
-  assertLevel("bat file.ts", "off");
+test("minimal: file reading commands", async () => {
+  assertLevel("cat file.txt", "minimal");
+  assertLevel("less file.txt", "minimal");
+  assertLevel("more file.txt", "minimal");
+  assertLevel("head -n 10 file.txt", "minimal");
+  assertLevel("tail -f log.txt", "minimal");
+  assertLevel("bat file.ts", "minimal");
 });
 
-test("off: directory listing commands", async () => {
-  assertLevel("ls", "off");
-  assertLevel("ls -la", "off");
-  assertLevel("ls -la /tmp", "off");
-  assertLevel("tree", "off");
-  assertLevel("pwd", "off");
-  assertLevel("cd /tmp", "off");
+test("minimal: directory listing commands", async () => {
+  assertLevel("ls", "minimal");
+  assertLevel("ls -la", "minimal");
+  assertLevel("ls -la /tmp", "minimal");
+  assertLevel("tree", "minimal");
+  assertLevel("pwd", "minimal");
+  assertLevel("cd /tmp", "minimal");
 });
 
-test("off: search commands", async () => {
-  assertLevel("grep pattern file.txt", "off");
-  assertLevel("grep -r pattern .", "off");
-  assertLevel("grep -E 'foo|bar' file", "off");
-  assertLevel("egrep pattern file", "off");
-  assertLevel("rg pattern", "off");
-  assertLevel("ag pattern", "off");
-  assertLevel("find . -name '*.ts'", "off");
-  assertLevel("fd pattern", "off");
-  assertLevel("which node", "off");
-  assertLevel("whereis git", "off");
+test("minimal: search commands", async () => {
+  assertLevel("grep pattern file.txt", "minimal");
+  assertLevel("grep -r pattern .", "minimal");
+  assertLevel("grep -E 'foo|bar' file", "minimal");
+  assertLevel("egrep pattern file", "minimal");
+  assertLevel("rg pattern", "minimal");
+  assertLevel("ag pattern", "minimal");
+  assertLevel("find . -name '*.ts'", "minimal");
+  assertLevel("fd pattern", "minimal");
+  assertLevel("which node", "minimal");
+  assertLevel("whereis git", "minimal");
 });
 
-test("off: info commands", async () => {
-  assertLevel("echo hello", "off");
-  assertLevel("printf '%s' hello", "off");
-  assertLevel("whoami", "off");
-  assertLevel("id", "off");
-  assertLevel("date", "off");
-  assertLevel("uname -a", "off");
-  assertLevel("hostname", "off");
-  assertLevel("uptime", "off");
-  assertLevel("file image.png", "off");
-  assertLevel("stat file.txt", "off");
-  assertLevel("wc -l file.txt", "off");
-  assertLevel("du -sh .", "off");
-  assertLevel("df -h", "off");
+test("minimal: info commands", async () => {
+  assertLevel("echo hello", "minimal");
+  assertLevel("printf '%s' hello", "minimal");
+  assertLevel("whoami", "minimal");
+  assertLevel("id", "minimal");
+  assertLevel("date", "minimal");
+  assertLevel("uname -a", "minimal");
+  assertLevel("hostname", "minimal");
+  assertLevel("uptime", "minimal");
+  assertLevel("file image.png", "minimal");
+  assertLevel("stat file.txt", "minimal");
+  assertLevel("wc -l file.txt", "minimal");
+  assertLevel("du -sh .", "minimal");
+  assertLevel("df -h", "minimal");
 });
 
-test("off: process commands", async () => {
-  assertLevel("ps aux", "off");
-  assertLevel("top -l 1", "off");
-  assertLevel("htop", "off");
-  assertLevel("pgrep node", "off");
+test("minimal: process commands", async () => {
+  assertLevel("ps aux", "minimal");
+  assertLevel("top -l 1", "minimal");
+  assertLevel("htop", "minimal");
+  assertLevel("pgrep node", "minimal");
 });
 
-test("off: environment commands", async () => {
-  assertLevel("env", "off");
-  assertLevel("printenv", "off");
-  assertLevel("set", "off");
+test("minimal: environment commands", async () => {
+  assertLevel("env", "minimal");
+  assertLevel("printenv", "minimal");
+  assertLevel("set", "minimal");
 });
 
-test("off: pipeline utilities", async () => {
-  assertLevel("sort file.txt", "off");
-  assertLevel("uniq file.txt", "off");
-  assertLevel("cut -d: -f1 /etc/passwd", "off");
-  assertLevel("awk '{print $1}' file", "off");
-  assertLevel("sed 's/foo/bar/' file", "off");
-  assertLevel("tr a-z A-Z", "off");
-  assertLevel("diff file1 file2", "off");
+test("minimal: pipeline utilities", async () => {
+  assertLevel("sort file.txt", "minimal");
+  assertLevel("uniq file.txt", "minimal");
+  assertLevel("cut -d: -f1 /etc/passwd", "minimal");
+  assertLevel("awk '{print $1}' file", "minimal");
+  assertLevel("sed 's/foo/bar/' file", "minimal");
+  assertLevel("tr a-z A-Z", "minimal");
+  assertLevel("diff file1 file2", "minimal");
 });
 
-test("off: version checks", async () => {
-  assertLevel("node --version", "off");
-  assertLevel("npm -v", "off");
-  assertLevel("python3 -V", "off");
-  assertLevel("git --version", "off");
-  assertLevel("rustc --version", "off");
+test("minimal: version checks", async () => {
+  assertLevel("node --version", "minimal");
+  assertLevel("npm -v", "minimal");
+  assertLevel("python3 -V", "minimal");
+  assertLevel("git --version", "minimal");
+  assertLevel("rustc --version", "minimal");
 });
 
-test("off: git read operations", async () => {
-  assertLevel("git status", "off");
-  assertLevel("git log", "off");
-  assertLevel("git log --oneline -10", "off");
-  assertLevel("git diff", "off");
-  assertLevel("git diff HEAD~1", "off");
-  assertLevel("git show HEAD", "off");
-  assertLevel("git branch", "off");
-  assertLevel("git branch -a", "off");
-  assertLevel("git remote -v", "off");
-  assertLevel("git tag", "off");
-  assertLevel("git ls-files", "off");
-  assertLevel("git blame file.ts", "off");
-  assertLevel("git reflog", "off");
+test("minimal: git read operations", async () => {
+  assertLevel("git status", "minimal");
+  assertLevel("git log", "minimal");
+  assertLevel("git log --oneline -10", "minimal");
+  assertLevel("git diff", "minimal");
+  assertLevel("git diff HEAD~1", "minimal");
+  assertLevel("git show HEAD", "minimal");
+  assertLevel("git branch", "minimal");
+  assertLevel("git branch -a", "minimal");
+  assertLevel("git remote -v", "minimal");
+  assertLevel("git tag", "minimal");
+  assertLevel("git ls-files", "minimal");
+  assertLevel("git blame file.ts", "minimal");
+  assertLevel("git reflog", "minimal");
 });
 
-test("off: package manager read operations", async () => {
-  assertLevel("npm list", "off");
-  assertLevel("npm ls", "off");
-  assertLevel("npm info lodash", "off");
-  assertLevel("npm outdated", "off");
-  assertLevel("npm audit", "off");
-  assertLevel("yarn list", "off");
-  assertLevel("pnpm list", "off");
-  assertLevel("pip list", "off");
-  assertLevel("pip3 show requests", "off");
-  assertLevel("cargo tree", "off");
-  assertLevel("go list ./...", "off");
+test("minimal: package manager read operations", async () => {
+  assertLevel("npm list", "minimal");
+  assertLevel("npm ls", "minimal");
+  assertLevel("npm info lodash", "minimal");
+  assertLevel("npm outdated", "minimal");
+  assertLevel("npm audit", "minimal");
+  assertLevel("yarn list", "minimal");
+  assertLevel("pnpm list", "minimal");
+  assertLevel("pip list", "minimal");
+  assertLevel("pip3 show requests", "minimal");
+  assertLevel("cargo tree", "minimal");
+  assertLevel("go list ./...", "minimal");
 });
 
 // ============================================================================
@@ -386,10 +386,10 @@ test("high: git irreversible operations", async () => {
   assertLevel("git checkout -- file.ts", "medium");
 });
 
-test("off: git fetch (read-only)", async () => {
-  assertLevel("git fetch", "off");
-  assertLevel("git fetch origin", "off");
-  assertLevel("git fetch --all", "off");
+test("minimal: git fetch (read-only)", async () => {
+  assertLevel("git fetch", "minimal");
+  assertLevel("git fetch origin", "minimal");
+  assertLevel("git fetch --all", "minimal");
 });
 
 // ============================================================================
@@ -525,39 +525,39 @@ test("shell tricks: nested command substitution in ${}", async () => {
 // ============================================================================
 
 test("safe: simple variable expansion", async () => {
-  assertLevel("echo $PATH", "off");
-  assertLevel("echo $HOME", "off");
-  assertLevel("echo $USER", "off");
+  assertLevel("echo $PATH", "minimal");
+  assertLevel("echo $HOME", "minimal");
+  assertLevel("echo $USER", "minimal");
 });
 
 test("safe: ${VAR} without nested commands", async () => {
-  assertLevel("echo ${PATH}", "off");
-  assertLevel("echo ${HOME}/file", "off");
-  assertLevel("ls ${PWD}", "off");
+  assertLevel("echo ${PATH}", "minimal");
+  assertLevel("echo ${HOME}/file", "minimal");
+  assertLevel("ls ${PWD}", "minimal");
 });
 
 test("safe: ${VAR} parameter expansion operations", async () => {
-  assertLevel("echo ${#PATH}", "off"); // length
-  assertLevel("echo ${PATH:0:5}", "off"); // substring
-  assertLevel("echo ${PATH/bin/lib}", "off"); // substitution
-  assertLevel("echo ${PATH:-default}", "off"); // default value (no cmd)
-  assertLevel("echo ${PATH:=default}", "off"); // assign default (no cmd)
+  assertLevel("echo ${#PATH}", "minimal"); // length
+  assertLevel("echo ${PATH:0:5}", "minimal"); // substring
+  assertLevel("echo ${PATH/bin/lib}", "minimal"); // substitution
+  assertLevel("echo ${PATH:-default}", "minimal"); // default value (no cmd)
+  assertLevel("echo ${PATH:=default}", "minimal"); // assign default (no cmd)
 });
 
 test("safe: grep with regex patterns", async () => {
-  assertLevel("grep 'foo|bar' file", "off");
-  assertLevel("grep -E 'foo|bar' file", "off");
-  assertLevel("grep 'pattern' file", "off");
-  assertLevel("grep -r 'TODO' .", "off");
+  assertLevel("grep 'foo|bar' file", "minimal");
+  assertLevel("grep -E 'foo|bar' file", "minimal");
+  assertLevel("grep 'pattern' file", "minimal");
+  assertLevel("grep -r 'TODO' .", "minimal");
 });
 
 test("safe: ANSI-C quoting", async () => {
-  assertLevel("echo $'hello\\nworld'", "off");
-  assertLevel("printf $'line1\\nline2'", "off");
+  assertLevel("echo $'hello\\nworld'", "minimal");
+  assertLevel("printf $'line1\\nline2'", "minimal");
 });
 
 test("safe: locale translation", async () => {
-  assertLevel('echo $"hello"', "off");
+  assertLevel('echo $"hello"', "minimal");
 });
 
 // ============================================================================
@@ -565,10 +565,10 @@ test("safe: locale translation", async () => {
 // ============================================================================
 
 test("pipelines: safe pipelines stay at lowest level", async () => {
-  assertLevel("cat file | grep pattern", "off");
-  assertLevel("ls -la | head -10", "off");
-  assertLevel("ps aux | grep node", "off");
-  assertLevel("git log | head", "off");
+  assertLevel("cat file | grep pattern", "minimal");
+  assertLevel("ls -la | head -10", "minimal");
+  assertLevel("ps aux | grep node", "minimal");
+  assertLevel("git log | head", "minimal");
 });
 
 test("pipelines: piping to shell requires high", async () => {
@@ -581,7 +581,7 @@ test("pipelines: piping to shell requires high", async () => {
 test("pipelines: highest level wins", async () => {
   assertLevel("npm install && git push", "high");
   assertLevel("git status && npm test", "medium");
-  assertLevel("ls && cat file", "off");
+  assertLevel("ls && cat file", "minimal");
 });
 
 // ============================================================================
@@ -600,20 +600,28 @@ test("complex: chained commands with ||", async () => {
 });
 
 test("complex: chained commands with ;", async () => {
-  assertLevel("cd dir; ls", "off");
+  assertLevel("cd dir; ls", "minimal");
   assertLevel("npm install; npm test", "medium");
 });
 
 test("complex: commands with redirections", async () => {
-  assertLevel("echo hello > file.txt", "off");
-  assertLevel("cat < file.txt", "off");
-  assertLevel("npm install 2>&1 | tee log.txt", "medium");
-  assertLevel("ls > /dev/null 2>&1", "off");
+  // Output redirections to files require at least low (file write)
+  assertLevel("echo hello > file.txt", "low");
+  assertLevel("echo hello >> file.txt", "low");
+  // Input redirections are read-only
+  assertLevel("cat < file.txt", "minimal");
+  // tee writes to log.txt, so requires high
+  assertLevel("npm install 2>&1 | tee log.txt", "high");
+  // Redirecting to /dev/null is safe (no actual file write)
+  assertLevel("ls > /dev/null 2>&1", "minimal");
+  assertLevel("echo test > /dev/null", "minimal");
+  // fd duplication (2>&1) doesn't write files
+  assertLevel("ls 2>&1", "minimal");
 });
 
 test("complex: commands with paths", async () => {
-  assertLevel("/usr/bin/ls", "off");
-  assertLevel("/bin/cat file", "off");
+  assertLevel("/usr/bin/ls", "minimal");
+  assertLevel("/bin/cat file", "minimal");
   assertLevel("./script.sh", "high"); // unknown script
   assertLevel("~/bin/my-tool", "high"); // unknown tool
 });
@@ -623,15 +631,15 @@ test("complex: commands with paths", async () => {
 // ============================================================================
 
 test("edge: empty command", async () => {
-  assertLevel("", "off");
+  assertLevel("", "minimal");
 });
 
 test("edge: whitespace only", async () => {
-  assertLevel("   ", "off");
+  assertLevel("   ", "minimal");
 });
 
 test("edge: command with leading backslash (alias bypass)", async () => {
-  assertLevel("\\ls", "off");
+  assertLevel("\\ls", "minimal");
   assertLevel("\\rm file", "high");
 });
 
@@ -646,13 +654,13 @@ test("edge: shell-quote parse failures are high", async () => {
 
 test("edge: git branch/tag/remote with and without args", async () => {
   // Listing (off)
-  assertLevel("git branch", "off");
-  assertLevel("git branch -a", "off");
-  assertLevel("git branch --list", "off");
-  assertLevel("git tag", "off");
-  assertLevel("git tag -l", "off");
-  assertLevel("git remote", "off");
-  assertLevel("git remote -v", "off");
+  assertLevel("git branch", "minimal");
+  assertLevel("git branch -a", "minimal");
+  assertLevel("git branch --list", "minimal");
+  assertLevel("git tag", "minimal");
+  assertLevel("git tag -l", "minimal");
+  assertLevel("git remote", "minimal");
+  assertLevel("git remote -v", "minimal");
   // Creating (medium)
   assertLevel("git branch new-branch", "medium");
   assertLevel("git branch -d old-branch", "medium");
@@ -678,16 +686,16 @@ test("edge: rm edge cases", async () => {
 });
 
 test("edge: special characters in paths", async () => {
-  assertLevel("cat 'file with spaces.txt'", "off");
-  assertLevel('cat "file with spaces.txt"', "off");
-  assertLevel("ls dir\\ with\\ spaces", "off");
-  assertLevel("cat file-with-dashes.txt", "off");
-  assertLevel("cat file_with_underscores.txt", "off");
+  assertLevel("cat 'file with spaces.txt'", "minimal");
+  assertLevel('cat "file with spaces.txt"', "minimal");
+  assertLevel("ls dir\\ with\\ spaces", "minimal");
+  assertLevel("cat file-with-dashes.txt", "minimal");
+  assertLevel("cat file_with_underscores.txt", "minimal");
 });
 
 test("edge: absolute and relative paths", async () => {
-  assertLevel("/bin/ls", "off");
-  assertLevel("/usr/bin/cat file", "off");
+  assertLevel("/bin/ls", "minimal");
+  assertLevel("/usr/bin/cat file", "minimal");
   assertLevel("./local-script.sh", "high"); // unknown script
   assertLevel("../parent-script.sh", "high"); // unknown script
   assertLevel("~/bin/my-tool", "high"); // unknown tool
@@ -703,23 +711,26 @@ test("edge: environment variable assignment", async () => {
 
 test("edge: subshells and grouping", async () => {
   // Subshell with () - shell-quote parses the inner commands
-  assertLevel("(cd dir && ls)", "off");
+  assertLevel("(cd dir && ls)", "minimal");
   // Command grouping with {} - the { is parsed as unknown command, defaults to high
   assertLevel("{ ls; pwd; }", "high");
 });
 
 test("edge: here documents and strings", async () => {
   // Here documents - << is parsed, cat is off
-  assertLevel("cat << EOF", "off");
+  assertLevel("cat << EOF", "minimal");
   // Here strings <<< - complex syntax, defaults to high
   assertLevel("cat <<< 'hello'", "high");
 });
 
 test("edge: multiple redirections", async () => {
-  assertLevel("cmd > out.txt 2> err.txt", "high"); // unknown cmd
-  assertLevel("ls > out.txt 2>&1", "off");
-  assertLevel("cat file 2>/dev/null", "off");
-  assertLevel("echo hello >> append.txt", "off");
+  assertLevel("cmd > out.txt 2> err.txt", "high"); // unknown cmd is high anyway
+  // Output to file requires low, but ls is minimal so result is low
+  assertLevel("ls > out.txt 2>&1", "low");
+  // stderr to /dev/null is safe
+  assertLevel("cat file 2>/dev/null", "minimal");
+  // Append to file requires low
+  assertLevel("echo hello >> append.txt", "low");
 });
 
 test("edge: npm/yarn scripts with special names", async () => {
@@ -769,27 +780,111 @@ test("edge: arithmetic expansion", async () => {
 });
 
 test("edge: brace expansion (safe)", async () => {
-  assertLevel("echo {a,b,c}", "off");
+  assertLevel("echo {a,b,c}", "minimal");
   assertLevel("touch file{1,2,3}.txt", "medium");
   assertLevel("cp file.{txt,bak}", "medium");
 });
 
 test("edge: glob patterns (safe)", async () => {
-  assertLevel("ls *.txt", "off");
-  assertLevel("cat src/**/*.ts", "off");
+  assertLevel("ls *.txt", "minimal");
+  assertLevel("cat src/**/*.ts", "minimal");
   assertLevel("rm *.tmp", "high"); // rm is high, but not dangerous without -rf
 });
 
-test("edge: xargs command (can execute arbitrary commands)", async () => {
-  // xargs can execute commands, so it's classified as high for safety
-  assertLevel("xargs cat", "high");
-  assertLevel("find . -name '*.txt' | xargs cat", "high");
-  assertLevel("find . -name '*.txt' | xargs rm", "high");
+test("edge: xargs with read-only commands (minimal)", async () => {
+  // xargs running read-only commands from MINIMAL_COMMANDS is safe
+  assertLevel("xargs cat", "minimal");
+  assertLevel("xargs head", "minimal");
+  assertLevel("xargs tail", "minimal");
+  assertLevel("xargs grep pattern", "minimal");
+  assertLevel("xargs wc -l", "minimal");
+  assertLevel("xargs ls", "minimal");
+  assertLevel("xargs echo", "minimal");
+  // No command = defaults to /bin/echo (safe)
+  assertLevel("xargs", "minimal");
+  // Pipelines with xargs + read-only command
+  assertLevel("find . -name '*.txt' | xargs cat", "minimal");
+  assertLevel("find . -name '*.ts' | xargs head -10", "minimal");
+  assertLevel("find . -type f | xargs wc -l", "minimal");
 });
 
-test("edge: tee command", async () => {
-  assertLevel("echo hello | tee file.txt", "off");
-  assertLevel("npm install 2>&1 | tee log.txt", "medium");
+test("edge: xargs with flags and read-only commands (minimal)", async () => {
+  // Various xargs flags should not affect classification
+  assertLevel("xargs -0 cat", "minimal");
+  assertLevel("xargs -n 1 cat", "minimal");
+  assertLevel("xargs -P 4 cat", "minimal");
+  assertLevel("xargs -I {} cat {}", "minimal");
+  assertLevel("xargs -I{} cat {}", "minimal");  // attached argument
+  assertLevel("xargs -d '\\n' cat", "minimal");
+  assertLevel("xargs --null cat", "minimal");
+  assertLevel("xargs -0 -n 1 -P 4 cat", "minimal");  // multiple flags
+  assertLevel("xargs -- cat", "minimal");  // explicit end of options
+  assertLevel("xargs -t cat", "minimal");  // verbose mode
+  assertLevel("xargs -p cat", "minimal");  // interactive mode (still read-only)
+});
+
+test("edge: xargs with full paths to read-only commands (minimal)", async () => {
+  assertLevel("xargs /bin/cat", "minimal");
+  assertLevel("xargs /usr/bin/cat", "minimal");
+  assertLevel("xargs /usr/bin/head", "minimal");
+});
+
+test("edge: xargs with non-read-only commands (high)", async () => {
+  // rm is not in MINIMAL_COMMANDS
+  assertLevel("xargs rm", "high");
+  assertLevel("find . -name '*.txt' | xargs rm", "high");
+  // shell commands can run anything
+  assertLevel("xargs sh -c 'cat'", "high");
+  assertLevel("xargs bash -c 'ls'", "high");
+  // interpreters run code
+  assertLevel("xargs node", "high");
+  assertLevel("xargs python", "high");
+  assertLevel("xargs python3", "high");
+  // unknown commands default to high
+  assertLevel("xargs unknown-cmd", "high");
+  assertLevel("xargs my-script.sh", "high");
+});
+
+test("edge: xargs with redirections", async () => {
+  // Output redirection makes it LOW (file write detected via shell redirection)
+  assertLevel("xargs cat > output.txt", "low");
+  assertLevel("xargs cat >> append.txt", "low");
+  assertLevel("find . | xargs cat > all.txt", "low");
+  assertLevel("xargs -I {} cat {} > {}.bak", "low");
+  
+  // Stderr to /dev/null is safe (no actual file write)
+  assertLevel("xargs cat 2>/dev/null", "minimal");
+  assertLevel("find . | xargs cat 2>/dev/null", "minimal");
+  
+  // Pipe to another command is safe (no file write)
+  assertLevel("xargs cat | head -10", "minimal");
+  assertLevel("xargs cat | grep pattern", "minimal");
+  assertLevel("find . | xargs cat | wc -l", "minimal");
+  
+  // Redirect to /dev/null is safe
+  assertLevel("xargs cat > /dev/null", "minimal");
+});
+
+test("edge: cat with redirections (not xargs)", async () => {
+  // Ensure cat itself is correctly classified with redirections
+  assertLevel("cat file.txt", "minimal");
+  assertLevel("cat file1 file2", "minimal");
+  assertLevel("cat file1 > file2", "low");  // write via redirection
+  assertLevel("cat file >> append.txt", "low");  // append via redirection
+  assertLevel("cat < input.txt", "minimal");  // input redirection is read-only
+  assertLevel("cat file 2>/dev/null", "minimal");  // stderr to /dev/null is safe
+  assertLevel("cat file > /dev/null", "minimal");  // /dev/null is safe
+  assertLevel("cat file | grep pattern", "minimal");  // pipe is read-only
+});
+
+test("edge: tee command (writes files)", async () => {
+  // tee with file arguments writes to those files - requires high
+  assertLevel("echo hello | tee file.txt", "high");
+  assertLevel("npm install 2>&1 | tee log.txt", "high");
+  // tee to /dev/null only is safe (no file write)
+  assertLevel("echo hello | tee /dev/null", "minimal");
+  // tee with no args just passes through (stdout only)
+  assertLevel("echo hello | tee", "minimal");
 });
 
 test("edge: common CI/CD commands", async () => {
@@ -818,23 +913,23 @@ test("edge: prisma commands", async () => {
 
 test("edge: case sensitivity", async () => {
   // Commands are normalized to lowercase, so LS == ls
-  assertLevel("LS", "off");
-  assertLevel("Cat file", "off");
-  assertLevel("GIT status", "off");
+  assertLevel("LS", "minimal");
+  assertLevel("Cat file", "minimal");
+  assertLevel("GIT status", "minimal");
 });
 
 test("edge: Windows-style paths (cross-platform)", async () => {
   // These might appear in cross-platform scenarios
-  assertLevel("cat C:\\Users\\file.txt", "off");
+  assertLevel("cat C:\\Users\\file.txt", "minimal");
 });
 
 test("edge: comments in commands", async () => {
-  assertLevel("ls # this is a comment", "off");
-  assertLevel("echo hello # comment", "off");
+  assertLevel("ls # this is a comment", "minimal");
+  assertLevel("echo hello # comment", "minimal");
 });
 
 test("edge: multiline commands (escaped newlines)", async () => {
-  assertLevel("ls \\\n  -la", "off");
+  assertLevel("ls \\\n  -la", "minimal");
 });
 
 test("edge: doas (OpenBSD sudo alternative)", async () => {
@@ -853,8 +948,8 @@ test("edge: nohup and background commands", async () => {
 });
 
 test("edge: time and timeout wrappers", async () => {
-  assertLevel("time ls", "high"); // time is not in OFF
-  assertLevel("timeout 10 npm test", "high"); // timeout is not in OFF
+  assertLevel("time ls", "high"); // time is not in MINIMAL
+  assertLevel("timeout 10 npm test", "high"); // timeout is not in MINIMAL
 });
 
 test("edge: exec variants", async () => {
@@ -862,25 +957,31 @@ test("edge: exec variants", async () => {
   assertLevel("exec > log.txt", "high");
 });
 
-test("edge: find with -exec", async () => {
-  // find is off, but -exec runs commands
-  assertLevel("find . -name '*.txt' -exec cat {} \\;", "off");
-  assertLevel("find . -type f -exec rm {} \\;", "off"); // find itself is off
+test("edge: find with -exec/-delete (can modify filesystem)", async () => {
+  // find without dangerous flags is minimal (read-only search)
+  assertLevel("find . -name '*.txt'", "minimal");
+  assertLevel("find . -type f -name '*.ts'", "minimal");
+  // find with -exec/-execdir/-ok/-okdir/-delete requires high (can execute/delete)
+  assertLevel("find . -name '*.txt' -exec cat {} \\;", "high");
+  assertLevel("find . -type f -exec rm {} \\;", "high");
+  assertLevel("find . -name '*.tmp' -delete", "high");
+  assertLevel("find . -type f -execdir mv {} {}.bak \\;", "high");
+  assertLevel("find . -name '*.txt' -ok rm {} \\;", "high");
 });
 
 test("edge: very long commands", async () => {
   const longCmd = "echo " + "a".repeat(10000);
-  assertLevel(longCmd, "off");
+  assertLevel(longCmd, "minimal");
 });
 
 test("edge: unicode in commands", async () => {
-  assertLevel("echo '你好世界'", "off");
-  assertLevel("cat файл.txt", "off");
-  assertLevel("ls 📁", "off");
+  assertLevel("echo '你好世界'", "minimal");
+  assertLevel("cat файл.txt", "minimal");
+  assertLevel("ls 📁", "minimal");
 });
 
 test("edge: null bytes and special chars", async () => {
-  assertLevel("echo 'hello\x00world'", "off");
+  assertLevel("echo 'hello\x00world'", "minimal");
 });
 
 // ============================================================================
@@ -890,15 +991,15 @@ test("edge: null bytes and special chars", async () => {
 test("happy: typical development workflow", async () => {
   // Clone (medium - reversible, just creates directory)
   assertLevel("git clone https://github.com/user/repo", "medium");
-  assertLevel("cd repo", "off");
+  assertLevel("cd repo", "minimal");
   assertLevel("npm install", "medium");
   
   // Development - run dev is high (runs server)
   assertLevel("npm run dev", "high");
   assertLevel("npm run build", "medium");
   assertLevel("npm test", "medium");
-  assertLevel("git status", "off");
-  assertLevel("git diff", "off");
+  assertLevel("git status", "minimal");
+  assertLevel("git diff", "minimal");
   assertLevel("git add .", "medium");
   assertLevel("git commit -m 'feat: add feature'", "medium");
   assertLevel("git push origin main", "high");
@@ -906,20 +1007,20 @@ test("happy: typical development workflow", async () => {
 
 test("happy: code review workflow", async () => {
   // fetch is read-only
-  assertLevel("git fetch origin", "off");
+  assertLevel("git fetch origin", "minimal");
   assertLevel("git checkout -b review/pr-123", "medium");
-  assertLevel("git log --oneline -20", "off");
-  assertLevel("git diff main..HEAD", "off");
-  assertLevel("grep -r 'TODO' src/", "off");
+  assertLevel("git log --oneline -20", "minimal");
+  assertLevel("git diff main..HEAD", "minimal");
+  assertLevel("grep -r 'TODO' src/", "minimal");
   assertLevel("npm test", "medium");
 });
 
 test("happy: debugging session", async () => {
-  assertLevel("cat src/index.ts", "off");
-  assertLevel("grep -n 'error' logs/*.log", "off");
-  assertLevel("tail -f logs/app.log", "off");
-  assertLevel("ps aux | grep node", "off");
-  assertLevel("lsof -i :3000", "high"); // lsof not in OFF
+  assertLevel("cat src/index.ts", "minimal");
+  assertLevel("grep -n 'error' logs/*.log", "minimal");
+  assertLevel("tail -f logs/app.log", "minimal");
+  assertLevel("ps aux | grep node", "minimal");
+  assertLevel("lsof -i :3000", "high"); // lsof not in MINIMAL
 });
 
 test("happy: Python development", async () => {
