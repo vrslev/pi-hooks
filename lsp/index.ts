@@ -303,13 +303,15 @@ const factory: CustomToolFactory = () => ({
         return { content: [{ type: "text", text }], details: symbols };
       }
       case "diagnostics": {
-        const diagnostics = await manager.touchFileAndWait(file, DEFAULT_DIAGNOSTICS_WAIT_MS);
+        const result = await manager.touchFileAndWait(file, DEFAULT_DIAGNOSTICS_WAIT_MS);
         const payload =
-          diagnostics.length > 0
-            ? diagnostics.map(formatDiagnostic).join("\n")
-            : "No diagnostics.";
+          !result.receivedResponse
+            ? "Timeout: LSP server did not respond in time. Server may still be initializing or analyzing the file. Try again in a moment."
+            : result.diagnostics.length > 0
+              ? result.diagnostics.map(formatDiagnostic).join("\n")
+              : "No diagnostics.";
         const text = `action: diagnostics\n${queryLine}${payload}`;
-        return { content: [{ type: "text", text }], details: diagnostics };
+        return { content: [{ type: "text", text }], details: result };
       }
       case "signature": {
         const result = await manager.getSignatureHelp(file, resolvedLine!, resolvedColumn!);

@@ -514,22 +514,37 @@ export class LSPManager {
     };
   }
 
-  async touchFileAndWait(filePath: string, timeoutMs: number): Promise<Diagnostic[]> {
+  async touchFileAndWait(filePath: string, timeoutMs: number): Promise<{ diagnostics: Diagnostic[], receivedResponse: boolean }> {
     const loaded = await this.loadFileForClients(filePath);
-    if (!loaded) return [];
+    if (!loaded) return { diagnostics: [], receivedResponse: false };
 
     const { clients, absPath, uri, languageId, content } = loaded;
 
-    const waitPromises: Promise<void>[] = [];
+    // Track if this is a newly opened file (TypeScript sends empty diagnostics first on didOpen)
+    const isNewlyOpened = clients.some(client => client.openFiles.get(absPath) === undefined);
+
+    const waitPromises: Promise<boolean>[] = [];
     for (const client of clients) {
       client.diagnostics.delete(absPath);
 
-      const promise = new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, timeoutMs);
+      const promise = new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), timeoutMs);
+        let notificationCount = 0;
+        const minDelay = isNewlyOpened ? 500 : 0; // Wait 500ms after first notification for new files
+        
         const listeners = client.diagnosticsListeners.get(absPath) || [];
         listeners.push(() => {
-          clearTimeout(timer);
-          resolve();
+          notificationCount++;
+          // For newly opened files, wait a bit longer to catch potential second notification
+          if (isNewlyOpened && notificationCount === 1) {
+            setTimeout(() => {
+              clearTimeout(timer);
+              resolve(true);
+            }, minDelay);
+          } else {
+            clearTimeout(timer);
+            resolve(true);
+          }
         });
         client.diagnosticsListeners.set(absPath, listeners);
       });
@@ -538,14 +553,15 @@ export class LSPManager {
 
     await this.sendDidOpenOrChange(clients, absPath, uri, languageId, content);
 
-    await Promise.all(waitPromises);
+    const results = await Promise.all(waitPromises);
+    const receivedResponse = results.some(r => r);
 
     const allDiagnostics: Diagnostic[] = [];
     for (const client of clients) {
       const diags = client.diagnostics.get(absPath);
       if (diags) allDiagnostics.push(...diags);
     }
-    return allDiagnostics;
+    return { diagnostics: allDiagnostics, receivedResponse };
   }
 
   async getDefinition(filePath: string, line: number, column: number): Promise<Location[]> {
