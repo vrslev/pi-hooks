@@ -1,2 +1,12 @@
 
 pi-session-*.html
+
+# Node modules
+node_modules/
+
+# Package locks
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+bun.lockb
+bun.lock

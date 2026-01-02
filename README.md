@@ -4,22 +4,30 @@ Minimal reference hooks for [`pi-coding-agent`](https://www.npmjs.com/package/@m
 
 ## Included hooks
 
-### `checkpoint/checkpoint.ts`
-- Captures your repo state at the start of every turn (tracked, staged, and untracked files)
-- Stores checkpoints as Git refs so you can restore code when branching conversations
-- Automatically saves the current worktree before restoring past snapshots
+### `checkpoint/`
+
+Git-based checkpoint system for restoring code state when branching conversations.
+
+- Captures repo state at the start of every turn (tracked, staged, and untracked files)
+- Stores checkpoints as Git refs for persistence across sessions
+- Offers restore options: files + conversation, conversation only, or files only
+- Automatically saves current state before restoring past snapshots
 
 ![Checkpoint Hook](assets/checkpoint-screenshot.png)
 
-### `lsp/lsp-hook.ts`
-- Runs Language Server Protocol (LSP) diagnostics after each `write`/`edit`
-- Supports web, Flutter, and common backend stacks via the servers configured in the hook
-- Manages LSP server lifecycles per project root for responsive feedback
+### `lsp/`
+
+Language Server Protocol diagnostics after file changes.
+
+- Runs LSP diagnostics after each `write`/`edit`
+- Supports web, Flutter, and common backend stacks
+- Manages LSP server lifecycles per project root
 
 ![LSP Hook](assets/lsp-screenshot.png)
 
-### `autonomy/autonomy.ts`
-Layered permission control with four autonomy levels:
+### `permission/`
+
+Layered permission control with four permission levels:
 
 | Level  | Description           | What's allowed                                      |
 |--------|-----------------------|-----------------------------------------------------|
@@ -30,30 +38,43 @@ Layered permission control with four autonomy levels:
 
 On first run you pick a level; it's saved per-project. You can escalate mid-session when needed.
 
-![Autonomy Hook](assets/autonomy-screenshot.png)
+![Permission Hook](assets/permission-screenshot.png)
 
 ## Usage
-1. Install dependencies inside each hook directory (`npm install`).
-2. **Project-scoped setup (`.pi/hooks`)**
+
+1. Install dependencies inside each hook directory:
    ```bash
-   # from the project root
-   mkdir -p .pi/hooks
-   cp checkpoint/checkpoint.ts .pi/hooks/checkpoint.ts
-   cp lsp/lsp-hook.ts .pi/hooks/lsp-hook.ts
+   cd checkpoint && npm install
+   cd ../lsp && npm install
    ```
-   pi automatically loads hooks under `.pi/hooks` when you run it inside this repository.
-3. **Global settings example** – reference the hook files directly from anywhere:
-   `~/.pi/agent/settings.json`
+
+2. **Project-scoped setup** (`.pi/hooks/`):
+   ```bash
+   mkdir -p .pi/hooks
+   cp checkpoint/checkpoint.ts .pi/hooks/
+   cp lsp/lsp.ts .pi/hooks/
+   cp permission/permission.ts .pi/hooks/
+   ```
+   pi automatically loads hooks from `.pi/hooks/`.
+
+3. **Global setup** (`~/.pi/agent/settings.json`):
    ```json
    {
      "hooks": [
        "/absolute/path/to/pi-hooks/checkpoint/checkpoint.ts",
-       "/absolute/path/to/pi-hooks/lsp/lsp-hook.ts",
-       "/absolute/path/to/pi-hooks/autonomy/autonomy.ts"
+       "/absolute/path/to/pi-hooks/lsp/lsp.ts",
+       "/absolute/path/to/pi-hooks/permission/permission.ts"
      ]
    }
    ```
-4. Consult the inline comments in each hook for configuration tweaks or additional server support.
+
+4. See inline comments in each hook for configuration options.
+
+## Testing
+
+```bash
+cd checkpoint && npm test
+```
 
 ## License
 
