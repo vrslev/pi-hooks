@@ -88,7 +88,7 @@ function setLevel(
     saveGlobalPermission(level);
   }
   if (ctx.ui?.setStatus) {
-    ctx.ui.setStatus("permission", getStatusText(level));
+    ctx.ui.setStatus("authority", getStatusText(level));
   }
 }
 
@@ -171,7 +171,7 @@ export function handleSessionStart(state: PermissionState, ctx: any): void {
 
   if (ctx.hasUI) {
     if (ctx.ui?.setStatus) {
-      ctx.ui.setStatus("permission", getStatusText(state.currentLevel));
+      ctx.ui.setStatus("authority", getStatusText(state.currentLevel));
     }
     if (state.currentLevel === "bypassed") {
       ctx.ui.notify("⚠️ Permission bypassed - all checks disabled!", "warning");
@@ -258,7 +258,7 @@ export interface WriteToolCallOptions {
   ctx: any;
 }
 
-/** Handle write/edit tool_call and tool_before_apply - check permission and prompt if needed */
+/** Handle write/edit tool_call - check permission and prompt if needed */
 export async function handleWriteToolCall(
   opts: WriteToolCallOptions
 ): Promise<{ block: true; reason: string } | undefined> {
