@@ -105,16 +105,40 @@ The `lsp` tool provides these actions:
 | `references` | Find all references | `file` + (`line`/`column` or `query`) |
 | `hover` | Get type/docs info | `file` + (`line`/`column` or `query`) |
 | `symbols` | List symbols in file | `file`, optional `query` filter |
-| `diagnostics` | Get file diagnostics | `file` |
+| `diagnostics` | Get single file diagnostics | `file`, optional `severity` filter |
+| `workspace-diagnostics` | Get diagnostics for multiple files | `files` array, optional `severity` filter |
 | `signature` | Get function signature | `file` + (`line`/`column` or `query`) |
+| `rename` | Rename symbol across files | `file` + (`line`/`column` or `query`) + `newName` |
+| `codeAction` | Get available quick fixes/refactors | `file` + `line`/`column`, optional `endLine`/`endColumn` |
 
 **Query resolution**: For position-based actions, you can provide a `query` (symbol name) instead of `line`/`column`. The tool will find the symbol in the file and use its position.
+
+**Severity filtering**: For `diagnostics` and `workspace-diagnostics` actions, use the `severity` parameter to filter results:
+- `all` (default): Show all diagnostics
+- `error`: Only errors
+- `warning`: Errors and warnings
+- `info`: Errors, warnings, and info
+- `hint`: All including hints
+
+**Workspace diagnostics**: The `workspace-diagnostics` action analyzes multiple files at once. Pass an array of file paths in the `files` parameter. Each file will be opened, analyzed by the appropriate LSP server, and diagnostics returned. Files are cleaned up after analysis to prevent memory bloat.
+
+```bash
+# Find all TypeScript files and check for errors
+find src -name "*.ts" -type f | xargs ...
+
+# Example tool call
+lsp action=workspace-diagnostics files=["src/index.ts", "src/utils.ts"] severity=error
+```
 
 Example questions the LLM can answer using this tool:
 - "Where is `handleSessionStart` defined in `lsp-hook.ts`?"
 - "Find all references to `getManager`"
 - "What type does `getDefinition` return?"
 - "List symbols in `lsp-core.ts`"
+- "Check all TypeScript files in src/ for errors"
+- "Get only errors from `index.ts`"
+- "Rename `oldFunction` to `newFunction`"
+- "What quick fixes are available at line 10?"
 
 ## File Structure
 
@@ -122,8 +146,7 @@ Example questions the LLM can answer using this tool:
 |------|---------|
 | `lsp.ts` | Hook entry point |
 | `lsp-hook.ts` | Hook event handlers and state management |
-| `lsp-core.ts` | LSPManager class and server configurations |
-| `lsp-shared.ts` | Shared singleton manager (used by hook and tool) |
+| `lsp-core.ts` | LSPManager class, server configs, singleton manager |
 | `index.ts` | Tool entry point (`--tool ./lsp`) |
 
 ## Testing

@@ -6,6 +6,13 @@
  * Skips tests if language server is not installed.
  */
 
+// Suppress stream errors from vscode-jsonrpc when LSP process exits
+process.on('uncaughtException', (err) => {
+  if (err.message?.includes('write after end')) return;
+  console.error('Uncaught:', err);
+  process.exit(1);
+});
+
 import { mkdtemp, rm, writeFile, mkdir } from "fs/promises";
 import { existsSync, statSync } from "fs";
 import { tmpdir } from "os";
@@ -81,7 +88,7 @@ test("typescript: detects type errors", async () => {
     const file = join(dir, "index.ts");
     await writeFile(file, `const x: string = 123;`);
 
-    const diagnostics = await manager.touchFileAndWait(file, 10000);
+    const { diagnostics } = await manager.touchFileAndWait(file, 10000);
 
     assert(diagnostics.length > 0, `Expected errors, got ${diagnostics.length}`);
     assert(
@@ -111,7 +118,7 @@ test("typescript: valid code has no errors", async () => {
     const file = join(dir, "index.ts");
     await writeFile(file, `const x: string = "hello";`);
 
-    const diagnostics = await manager.touchFileAndWait(file, 10000);
+    const { diagnostics } = await manager.touchFileAndWait(file, 10000);
     const errors = diagnostics.filter(d => d.severity === 1);
 
     assert(errors.length === 0, `Expected no errors, got: ${errors.map(d => d.message).join(", ")}`);
@@ -146,7 +153,7 @@ void main() {
 }
 `);
 
-    const diagnostics = await manager.touchFileAndWait(file, 15000);
+    const { diagnostics } = await manager.touchFileAndWait(file, 15000);
 
     assert(diagnostics.length > 0, `Expected errors, got ${diagnostics.length}`);
   } finally {
@@ -175,7 +182,7 @@ void main() {
 }
 `);
 
-    const diagnostics = await manager.touchFileAndWait(file, 15000);
+    const { diagnostics } = await manager.touchFileAndWait(file, 15000);
     const errors = diagnostics.filter(d => d.severity === 1);
 
     assert(errors.length === 0, `Expected no errors, got: ${errors.map(d => d.message).join(", ")}`);
@@ -186,14 +193,10 @@ void main() {
 });
 
 // ============================================================================
-// Rust (rust-analyzer is very slow - needs to compile the project)
-// These tests are skipped by default. Run with RUST_LSP_TEST=1 to enable.
+// Rust
 // ============================================================================
 
-test("rust: detects type errors (slow - skipped by default)", async () => {
-  if (!process.env.RUST_LSP_TEST) {
-    skip("rust-analyzer tests disabled (set RUST_LSP_TEST=1 to enable)");
-  }
+test("rust: detects type errors", async () => {
   if (!commandExists("rust-analyzer")) {
     skip("rust-analyzer not installed");
   }
@@ -209,7 +212,7 @@ test("rust: detects type errors (slow - skipped by default)", async () => {
     await writeFile(file, `fn main() {\n    let x: i32 = "hello";\n}`);
 
     // rust-analyzer needs a LOT of time to initialize (compiles the project)
-    const diagnostics = await manager.touchFileAndWait(file, 60000);
+    const { diagnostics } = await manager.touchFileAndWait(file, 60000);
 
     assert(diagnostics.length > 0, `Expected errors, got ${diagnostics.length}`);
   } finally {
@@ -218,10 +221,7 @@ test("rust: detects type errors (slow - skipped by default)", async () => {
   }
 });
 
-test("rust: valid code has no errors (slow - skipped by default)", async () => {
-  if (!process.env.RUST_LSP_TEST) {
-    skip("rust-analyzer tests disabled (set RUST_LSP_TEST=1 to enable)");
-  }
+test("rust: valid code has no errors", async () => {
   if (!commandExists("rust-analyzer")) {
     skip("rust-analyzer not installed");
   }
@@ -236,7 +236,7 @@ test("rust: valid code has no errors (slow - skipped by default)", async () => {
     const file = join(dir, "src/main.rs");
     await writeFile(file, `fn main() {\n    let x = "hello";\n    println!("{}", x);\n}`);
 
-    const diagnostics = await manager.touchFileAndWait(file, 60000);
+    const { diagnostics } = await manager.touchFileAndWait(file, 60000);
     const errors = diagnostics.filter(d => d.severity === 1);
 
     assert(errors.length === 0, `Expected no errors, got: ${errors.map(d => d.message).join(", ")}`);
@@ -271,7 +271,7 @@ func main() {
 }
 `);
 
-    const diagnostics = await manager.touchFileAndWait(file, 15000);
+    const { diagnostics } = await manager.touchFileAndWait(file, 15000);
 
     assert(diagnostics.length > 0, `Expected errors, got ${diagnostics.length}`);
   } finally {
@@ -300,7 +300,7 @@ func main() {
 }
 `);
 
-    const diagnostics = await manager.touchFileAndWait(file, 15000);
+    const { diagnostics } = await manager.touchFileAndWait(file, 15000);
     const errors = diagnostics.filter(d => d.severity === 1);
 
     assert(errors.length === 0, `Expected no errors, got: ${errors.map(d => d.message).join(", ")}`);
@@ -335,7 +335,7 @@ x: str = 123  # Type error
 result = greet(456)  # Type error
 `);
 
-    const diagnostics = await manager.touchFileAndWait(file, 10000);
+    const { diagnostics } = await manager.touchFileAndWait(file, 10000);
 
     assert(diagnostics.length > 0, `Expected errors, got ${diagnostics.length}`);
   } finally {
@@ -364,10 +364,138 @@ x: str = "world"
 result = greet(x)
 `);
 
-    const diagnostics = await manager.touchFileAndWait(file, 10000);
+    const { diagnostics } = await manager.touchFileAndWait(file, 10000);
     const errors = diagnostics.filter(d => d.severity === 1);
 
     assert(errors.length === 0, `Expected no errors, got: ${errors.map(d => d.message).join(", ")}`);
+  } finally {
+    await manager.shutdown();
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+// ============================================================================
+// Rename (TypeScript)
+// ============================================================================
+
+test("typescript: rename symbol", async () => {
+  if (!commandExists("typescript-language-server")) {
+    skip("typescript-language-server not installed");
+  }
+
+  const dir = await mkdtemp(join(tmpdir(), "lsp-ts-rename-"));
+  const manager = new LSPManager(dir);
+
+  try {
+    await writeFile(join(dir, "package.json"), "{}");
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { strict: true, noEmit: true }
+    }));
+
+    const file = join(dir, "index.ts");
+    await writeFile(file, `function greet(name: string) {
+  return "Hello, " + name;
+}
+const result = greet("world");
+`);
+
+    // Touch file first to ensure it's loaded
+    await manager.touchFileAndWait(file, 10000);
+
+    // Rename 'greet' at line 1, col 10
+    const edit = await manager.rename(file, 1, 10, "sayHello");
+
+    assert(edit !== null, "Expected rename to return WorkspaceEdit");
+    assert(
+      edit.changes !== undefined || edit.documentChanges !== undefined,
+      "Expected changes or documentChanges in WorkspaceEdit"
+    );
+
+    // Should have edits for both the function definition and the call
+    const allEdits: any[] = [];
+    if (edit.changes) {
+      for (const edits of Object.values(edit.changes)) {
+        allEdits.push(...(edits as any[]));
+      }
+    }
+    if (edit.documentChanges) {
+      for (const change of edit.documentChanges as any[]) {
+        if (change.edits) allEdits.push(...change.edits);
+      }
+    }
+
+    assert(allEdits.length >= 2, `Expected at least 2 edits (definition + usage), got ${allEdits.length}`);
+  } finally {
+    await manager.shutdown();
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+// ============================================================================
+// Code Actions (TypeScript)
+// ============================================================================
+
+test("typescript: get code actions for error", async () => {
+  if (!commandExists("typescript-language-server")) {
+    skip("typescript-language-server not installed");
+  }
+
+  const dir = await mkdtemp(join(tmpdir(), "lsp-ts-actions-"));
+  const manager = new LSPManager(dir);
+
+  try {
+    await writeFile(join(dir, "package.json"), "{}");
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { strict: true, noEmit: true }
+    }));
+
+    const file = join(dir, "index.ts");
+    // Missing import - should offer "Add import" code action
+    await writeFile(file, `const x: Promise<string> = Promise.resolve("hello");
+console.log(x);
+`);
+
+    // Touch to get diagnostics first
+    await manager.touchFileAndWait(file, 10000);
+
+    // Get code actions at line 1
+    const actions = await manager.getCodeActions(file, 1, 1, 1, 50);
+
+    // May or may not have actions depending on the code, but shouldn't throw
+    assert(Array.isArray(actions), "Expected array of code actions");
+  } finally {
+    await manager.shutdown();
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test("typescript: code actions for missing function", async () => {
+  if (!commandExists("typescript-language-server")) {
+    skip("typescript-language-server not installed");
+  }
+
+  const dir = await mkdtemp(join(tmpdir(), "lsp-ts-actions2-"));
+  const manager = new LSPManager(dir);
+
+  try {
+    await writeFile(join(dir, "package.json"), "{}");
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { strict: true, noEmit: true }
+    }));
+
+    const file = join(dir, "index.ts");
+    // Call undefined function - should offer quick fix
+    await writeFile(file, `const result = undefinedFunction();
+`);
+
+    await manager.touchFileAndWait(file, 10000);
+
+    // Get code actions where the error is
+    const actions = await manager.getCodeActions(file, 1, 16, 1, 33);
+
+    // TypeScript should offer to create the function
+    assert(Array.isArray(actions), "Expected array of code actions");
+    // Note: we don't assert on action count since it depends on TS version
   } finally {
     await manager.shutdown();
     await rm(dir, { recursive: true, force: true }).catch(() => {});
