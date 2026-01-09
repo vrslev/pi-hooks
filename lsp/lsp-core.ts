@@ -71,6 +71,7 @@ interface LSPClient {
   openFiles: Map<string, OpenFile>;
   listeners: Map<string, Array<() => void>>;
   root: string;
+  closed: boolean;
 }
 
 export interface FileDiagnosticItem {
@@ -228,10 +229,11 @@ export class LSPManager {
   private closeFile(client: LSPClient, absPath: string) {
     if (!client.openFiles.has(absPath)) return;
     client.openFiles.delete(absPath);
+    if (client.closed) return;
     try {
-      client.connection.sendNotification(DidCloseTextDocumentNotification.type, {
+      void client.connection.sendNotification(DidCloseTextDocumentNotification.type, {
         textDocument: { uri: pathToFileURL(absPath).href },
-      });
+      }).catch(() => {});
     } catch {}
   }
 
@@ -263,8 +265,13 @@ export class LSPManager {
       handle.process.stderr?.on("error", () => {});
 
       const client: LSPClient = {
-        connection: conn, process: handle.process, diagnostics: new Map(),
-        openFiles: new Map(), listeners: new Map(), root,
+        connection: conn,
+        process: handle.process,
+        diagnostics: new Map(),
+        openFiles: new Map(),
+        listeners: new Map(),
+        root,
+        closed: false,
       };
 
       conn.onNotification("textDocument/publishDiagnostics", (params: { uri: string; diagnostics: Diagnostic[] }) => {
@@ -277,7 +284,7 @@ export class LSPManager {
 
       // Handle errors to prevent crashes
       conn.onError(() => {});
-      conn.onClose(() => { this.clients.delete(k); });
+      conn.onClose(() => { client.closed = true; this.clients.delete(k); });
 
       conn.onRequest("workspace/configuration", () => [handle.initOptions ?? {}]);
       conn.onRequest("window/workDoneProgress/create", () => null);
@@ -285,8 +292,8 @@ export class LSPManager {
       conn.onRequest("client/unregisterCapability", () => {});
       conn.onRequest("workspace/workspaceFolders", () => [{ name: "workspace", uri: pathToFileURL(root).href }]);
 
-      handle.process.on("exit", () => this.clients.delete(k));
-      handle.process.on("error", () => { this.clients.delete(k); this.broken.add(k); });
+      handle.process.on("exit", () => { client.closed = true; this.clients.delete(k); });
+      handle.process.on("error", () => { client.closed = true; this.clients.delete(k); this.broken.add(k); });
 
       conn.listen();
 
@@ -367,25 +374,26 @@ export class LSPManager {
   private async openOrUpdate(clients: LSPClient[], absPath: string, uri: string, langId: string, content: string, evict = true) {
     const now = Date.now();
     for (const client of clients) {
+      if (client.closed) continue;
       const state = client.openFiles.get(absPath);
       try {
         if (state) {
           const v = state.version + 1;
           client.openFiles.set(absPath, { version: v, lastAccess: now });
-          client.connection.sendNotification(DidChangeTextDocumentNotification.type, {
+          void client.connection.sendNotification(DidChangeTextDocumentNotification.type, {
             textDocument: { uri, version: v }, contentChanges: [{ text: content }],
-          });
+          }).catch(() => {});
         } else {
           client.openFiles.set(absPath, { version: 0, lastAccess: now });
-          client.connection.sendNotification(DidOpenTextDocumentNotification.type, {
+          void client.connection.sendNotification(DidOpenTextDocumentNotification.type, {
             textDocument: { uri, languageId: langId, version: 0, text: content },
-          });
+          }).catch(() => {});
           if (evict) this.evictLRU(client);
         }
         // Send didSave to trigger analysis (important for TypeScript)
-        client.connection.sendNotification(DidSaveTextDocumentNotification.type, {
+        void client.connection.sendNotification(DidSaveTextDocumentNotification.type, {
           textDocument: { uri }, text: content,
-        });
+        }).catch(() => {});
       } catch {}
     }
   }
@@ -401,26 +409,27 @@ export class LSPManager {
 
   private waitForDiagnostics(client: LSPClient, absPath: string, timeoutMs: number, isNew: boolean): Promise<boolean> {
     return new Promise(resolve => {
+      if (client.closed) return resolve(false);
       let resolved = false;
       let count = 0;
-      
+
       const listener = () => {
         if (resolved) return;
         count++;
         if (isNew && count === 1) {
-          setTimeout(() => { 
+          setTimeout(() => {
             if (resolved) return;
             resolved = true;
-            clearTimeout(timer); 
-            resolve(true); 
+            clearTimeout(timer);
+            resolve(true);
           }, 500);
         } else {
           resolved = true;
-          clearTimeout(timer); 
+          clearTimeout(timer);
           resolve(true);
         }
       };
-      
+
       const timer = setTimeout(() => {
         if (resolved) return;
         resolved = true;
@@ -433,7 +442,7 @@ export class LSPManager {
         }
         resolve(false);
       }, timeoutMs);
-      
+
       const listeners = client.listeners.get(absPath) || [];
       listeners.push(listener);
       client.listeners.set(absPath, listeners);
@@ -524,6 +533,7 @@ export class LSPManager {
     await this.openOrUpdate(l.clients, l.absPath, l.uri, l.langId, l.content);
     const pos = this.toPos(line, col);
     const results = await Promise.all(l.clients.map(async c => {
+      if (c.closed) return [];
       try { return this.normalizeLocs(await c.connection.sendRequest(DefinitionRequest.type, { textDocument: { uri: l.uri }, position: pos })); }
       catch { return []; }
     }));
@@ -536,6 +546,7 @@ export class LSPManager {
     await this.openOrUpdate(l.clients, l.absPath, l.uri, l.langId, l.content);
     const pos = this.toPos(line, col);
     const results = await Promise.all(l.clients.map(async c => {
+      if (c.closed) return [];
       try { return this.normalizeLocs(await c.connection.sendRequest(ReferencesRequest.type, { textDocument: { uri: l.uri }, position: pos, context: { includeDeclaration: true } })); }
       catch { return []; }
     }));
@@ -548,6 +559,7 @@ export class LSPManager {
     await this.openOrUpdate(l.clients, l.absPath, l.uri, l.langId, l.content);
     const pos = this.toPos(line, col);
     for (const c of l.clients) {
+      if (c.closed) continue;
       try { const r = await c.connection.sendRequest(HoverRequest.type, { textDocument: { uri: l.uri }, position: pos }); if (r) return r; }
       catch {}
     }
@@ -560,6 +572,7 @@ export class LSPManager {
     await this.openOrUpdate(l.clients, l.absPath, l.uri, l.langId, l.content);
     const pos = this.toPos(line, col);
     for (const c of l.clients) {
+      if (c.closed) continue;
       try { const r = await c.connection.sendRequest(SignatureHelpRequest.type, { textDocument: { uri: l.uri }, position: pos }); if (r) return r; }
       catch {}
     }
@@ -571,6 +584,7 @@ export class LSPManager {
     if (!l) return [];
     await this.openOrUpdate(l.clients, l.absPath, l.uri, l.langId, l.content);
     const results = await Promise.all(l.clients.map(async c => {
+      if (c.closed) return [];
       try { return this.normalizeSymbols(await c.connection.sendRequest(DocumentSymbolRequest.type, { textDocument: { uri: l.uri } })); }
       catch { return []; }
     }));
@@ -583,6 +597,7 @@ export class LSPManager {
     await this.openOrUpdate(l.clients, l.absPath, l.uri, l.langId, l.content);
     const pos = this.toPos(line, col);
     for (const c of l.clients) {
+      if (c.closed) continue;
       try {
         const r = await c.connection.sendRequest(RenameRequest.type, {
           textDocument: { uri: l.uri },
@@ -614,6 +629,7 @@ export class LSPManager {
     }
     
     const results = await Promise.all(l.clients.map(async c => {
+      if (c.closed) return [];
       try {
         const r = await c.connection.sendRequest(CodeActionRequest.type, {
           textDocument: { uri: l.uri },
@@ -639,13 +655,17 @@ export class LSPManager {
     const clients = Array.from(this.clients.values());
     this.clients.clear();
     for (const c of clients) {
-      try {
-        await Promise.race([
-          c.connection.sendRequest("shutdown"),
-          new Promise(r => setTimeout(r, 1000))
-        ]);
-      } catch {}
-      try { c.connection.sendNotification("exit"); } catch {}
+      const wasClosed = c.closed;
+      c.closed = true;
+      if (!wasClosed) {
+        try {
+          await Promise.race([
+            c.connection.sendRequest("shutdown"),
+            new Promise(r => setTimeout(r, 1000))
+          ]);
+        } catch {}
+        try { void c.connection.sendNotification("exit").catch(() => {}); } catch {}
+      }
       try { c.connection.end(); } catch {}
       try { c.process.kill(); } catch {}
     }
