@@ -207,6 +207,9 @@ interface RalphLoopDetails {
 	lastCondition: { stdout: string; stderr: string; exitCode: number };
 	prompt: LoopPromptInfo;
 	steering: string[];
+	followUps: string[];
+	steeringSent: string[];
+	followUpsSent: string[];
 	status: LoopRunStatus;
 }
 
@@ -216,6 +219,9 @@ interface LoopControlState {
 	iterations: number;
 	steering: string[];
 	steeringOnce: string[];
+	followUps: string[];
+	steeringSent: string[];
+	followUpsSent: string[];
 	paused: boolean;
 	abortController: AbortController | null;
 	lastDetails: RalphLoopDetails | null;
@@ -329,36 +335,87 @@ function renderLoopEntries(entries: LoopViewerEntry[], theme: any, tui: any, cwd
 	return container;
 }
 
+const LANGUAGE_OVERRIDES: Record<string, string> = {
+	".ts": "typescript",
+	".tsx": "typescript",
+	".js": "javascript",
+	".jsx": "javascript",
+	".mjs": "javascript",
+	".cjs": "javascript",
+	".json": "json",
+	".md": "markdown",
+	".yml": "yaml",
+	".yaml": "yaml",
+	".toml": "toml",
+	".sh": "bash",
+	".bash": "bash",
+	".zsh": "bash",
+	".py": "python",
+	".go": "go",
+	".rs": "rust",
+	".java": "java",
+	".c": "c",
+	".h": "c",
+	".cpp": "cpp",
+	".cc": "cpp",
+	".cxx": "cpp",
+	".hpp": "cpp",
+	".hh": "cpp",
+	".hxx": "cpp",
+	".css": "css",
+	".html": "html",
+	".htm": "html",
+	".sql": "sql",
+	".rb": "ruby",
+	".php": "php",
+	".swift": "swift",
+};
+
+function getLanguageFromPath(filePath: string): string | null {
+	const ext = path.extname(filePath).toLowerCase();
+	return LANGUAGE_OVERRIDES[ext] ?? null;
+}
+
+function getLanguageForToolOutput(toolName: string, args: Record<string, any>): string | null {
+	if (toolName === "bash") return "bash";
+	const rawPath = (args.file_path || args.path) as string | undefined;
+	if (!rawPath) return null;
+	return getLanguageFromPath(rawPath);
+}
+
 function formatLoopEntriesText(loopDetails: RalphLoopDetails): string {
 	const entries = buildLoopEntries(loopDetails);
 	const themePlain = (_color: any, text: string) => text;
-	const lines: string[] = [];
+	const lines: string[] = ["## Ralph Loop Details"];
 
 	for (const entry of entries) {
 		switch (entry.type) {
 			case "section":
-				lines.push("", entry.text);
+				lines.push("", `### ${entry.text}`);
 				break;
 			case "meta":
 			case "note":
-				lines.push(entry.text);
+				lines.push(`- ${entry.text}`);
 				break;
 			case "user":
-				lines.push(`User: ${entry.text}`);
+				lines.push("", "**User:**", entry.text);
 				break;
 			case "assistant": {
 				const text = extractTextFromContent(entry.message.content).trim();
-				if (text) lines.push(`Assistant: ${text}`);
+				if (text) {
+					lines.push("", "**Assistant:**", text);
+				}
 				break;
 			}
 			case "toolExecution": {
 				const toolLine = formatToolCall(entry.toolName, entry.args, themePlain);
-				lines.push(`Tool: ${toolLine}`);
+				lines.push("", `**Tool:** ${toolLine}`);
 				const output = extractTextFromContent(entry.result.content).trim();
 				if (output) {
-					lines.push(output);
+					const language = getLanguageForToolOutput(entry.toolName, entry.args);
+					lines.push(language ? `\`\`\`${language}` : "```", output, "```");
 				} else {
-					lines.push("(no output)");
+					lines.push("_(no output)_");
 				}
 				break;
 			}
@@ -390,12 +447,32 @@ function buildLoopEntries(loopDetails: RalphLoopDetails): LoopViewerEntry[] {
 	entries.push({ type: "meta", text: `Stop: ${loopDetails.stopReason}` });
 	entries.push({ type: "meta", text: `Condition: ${loopDetails.conditionCommand} (${loopDetails.conditionSource})` });
 	entries.push({ type: "meta", text: `Iterations: ${loopDetails.iterations.length}` });
-	if (loopDetails.steering.length > 0) {
-		entries.push({ type: "meta", text: `Steering: ${loopDetails.steering.join(" | ")}` });
-	}
+
+	const appendQueuedEntries = () => {
+		const hasQueued =
+			loopDetails.steering.length > 0 ||
+			loopDetails.followUps.length > 0 ||
+			loopDetails.steeringSent.length > 0 ||
+			loopDetails.followUpsSent.length > 0;
+		if (!hasQueued) return;
+		entries.push({ type: "section", text: "Queued Messages" });
+		if (loopDetails.steering.length > 0) {
+			entries.push({ type: "note", text: `Steering queued: ${loopDetails.steering.join(" | ")}` });
+		}
+		if (loopDetails.followUps.length > 0) {
+			entries.push({ type: "note", text: `Follow-ups queued: ${loopDetails.followUps.join(" | ")}` });
+		}
+		if (loopDetails.steeringSent.length > 0) {
+			entries.push({ type: "note", text: `Steering sent: ${loopDetails.steeringSent.join(" | ")}` });
+		}
+		if (loopDetails.followUpsSent.length > 0) {
+			entries.push({ type: "note", text: `Follow-ups sent: ${loopDetails.followUpsSent.join(" | ")}` });
+		}
+	};
 
 	if (loopDetails.iterations.length === 0) {
 		entries.push({ type: "note", text: "(no iterations yet)" });
+		appendQueuedEntries();
 		return entries;
 	}
 
@@ -442,6 +519,7 @@ function buildLoopEntries(loopDetails: RalphLoopDetails): LoopViewerEntry[] {
 		}
 	}
 
+	appendQueuedEntries();
 	return entries;
 }
 
@@ -607,6 +685,7 @@ async function runSingleAgent(
 	thinkingLevel?: string,
 	taskIndex?: number,
 	registerActiveRun?: ActiveRunRegistration,
+	initialFollowUps?: string[],
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -893,11 +972,27 @@ async function runSingleAgent(
 				else signal.addEventListener("abort", abortRpc, { once: true });
 			}
 
-			sendCommand({ type: "prompt", message: `Task: ${task}` }).catch((error) => {
-				currentResult.stderr += error?.message ? `\n${error.message}` : String(error);
-				resolveOnce(1);
-				proc.kill("SIGTERM");
-			});
+			sendCommand({ type: "prompt", message: `Task: ${task}` })
+				.then(() => {
+					const followUps = (initialFollowUps ?? []).filter((msg) => msg.trim().length > 0);
+					if (followUps.length === 0) return;
+					const queueFollowUps = async () => {
+						for (const message of followUps) {
+							try {
+								await sendCommand({ type: "follow_up", message });
+							} catch (error: any) {
+								const errorMessage = error?.message ? `\n${error.message}` : `\n${String(error)}`;
+								currentResult.stderr += errorMessage;
+							}
+						}
+					};
+					void queueFollowUps();
+				})
+				.catch((error) => {
+					currentResult.stderr += error?.message ? `\n${error.message}` : String(error);
+					resolveOnce(1);
+					proc.kill("SIGTERM");
+				});
 		});
 
 		currentResult.exitCode = exitCode;
@@ -995,6 +1090,7 @@ async function executeSubagentOnce(
 	signal?: AbortSignal,
 	onUpdate?: OnUpdateCallback,
 	registerActiveRun?: ActiveRunRegistration,
+	initialFollowUps?: string[],
 ): Promise<LoopExecutionResult> {
 	const agentScope: AgentScope = params.agentScope ?? "user";
 	const discovery = discoverAgents(ctx.cwd, agentScope);
@@ -1085,6 +1181,7 @@ async function executeSubagentOnce(
 				step.thinking ?? params.thinking,
 				undefined,
 				registerActiveRun,
+				initialFollowUps,
 			);
 			results.push(result);
 
@@ -1187,6 +1284,7 @@ async function executeSubagentOnce(
 					t.thinking ?? params.thinking,
 					index,
 					registerActiveRun,
+					initialFollowUps,
 				);
 				if (allResults) {
 					allResults[index] = result;
@@ -1226,6 +1324,7 @@ async function executeSubagentOnce(
 			params.thinking,
 			undefined,
 			registerActiveRun,
+			initialFollowUps,
 		);
 		const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 		if (isError) {
@@ -1415,6 +1514,9 @@ export default function (pi: ExtensionAPI) {
 		iterations: 0,
 		steering: [],
 		steeringOnce: [],
+		followUps: [],
+		steeringSent: [],
+		followUpsSent: [],
 		paused: false,
 		abortController: null,
 		lastDetails: null,
@@ -1484,7 +1586,9 @@ export default function (pi: ExtensionAPI) {
 			if (!message) return;
 
 			const sentToActive = await sendFollowUpToActive(message);
-			if (!sentToActive) {
+			if (sentToActive) {
+				loopControl.steeringSent.push(message);
+			} else {
 				if (once) {
 					loopControl.steeringOnce.push(message);
 				} else {
@@ -1496,6 +1600,35 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("Queued for current iteration.", "info");
 			} else {
 				ctx.ui.notify(once ? "One-off steering queued for next iteration." : "Steering queued for next iteration.", "info");
+			}
+			ctx.ui.setStatus("ralph-loop", getLoopStatusLine());
+		},
+	});
+
+	pi.registerCommand("ralph-follow", {
+		description: "Queue a follow-up message for the active ralph_loop run",
+		handler: async (args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("Interactive mode required.", "error");
+				return;
+			}
+			if (!ensureActiveLoop(ctx)) return;
+
+			let message = args.trim();
+			if (!message) {
+				const input = await ctx.ui.input("Follow up ralph_loop:", "Queue a follow-up message");
+				if (!input) return;
+				message = input.trim();
+			}
+			if (!message) return;
+
+			const sentToActive = await sendFollowUpToActive(message);
+			if (sentToActive) {
+				loopControl.followUpsSent.push(message);
+				ctx.ui.notify("Queued for current iteration.", "info");
+			} else {
+				loopControl.followUps.push(message);
+				ctx.ui.notify("Follow-up queued for next iteration.", "info");
 			}
 			ctx.ui.setStatus("ralph-loop", getLoopStatusLine());
 		},
@@ -1585,11 +1718,13 @@ export default function (pi: ExtensionAPI) {
 			const maxLabel =
 				typeof maxIterations === "number" && maxIterations !== Number.MAX_SAFE_INTEGER ? `/${maxIterations}` : "";
 			const steeringCount = loopControl.steering.length + loopControl.steeringOnce.length;
+			const followUpCount = loopControl.followUps.length;
 			const parts = [`Status: ${loopControl.status}`];
 			if (loopControl.runId) parts.push(`Run: ${loopControl.runId}`);
 			parts.push(`Iterations: ${iterations}${maxLabel}`);
 			if (loopControl.status === "idle" && details?.stopReason) parts.push(`Last stop: ${details.stopReason}`);
 			if (steeringCount > 0) parts.push(`Steering queued: ${steeringCount}`);
+			if (followUpCount > 0) parts.push(`Follow-ups queued: ${followUpCount}`);
 			ctx.ui.notify(parts.join(" | "), "info");
 		},
 	});
@@ -1740,6 +1875,9 @@ export default function (pi: ExtensionAPI) {
 				lastCondition: { stdout: "", stderr: "", exitCode: 0 },
 				prompt: emptyPrompt,
 				steering: [...loopControl.steering, ...loopControl.steeringOnce],
+				followUps: [...loopControl.followUps],
+				steeringSent: [...loopControl.steeringSent],
+				followUpsSent: [...loopControl.followUpsSent],
 				status: loopControl.status,
 				...overrides,
 			});
@@ -1924,6 +2062,9 @@ export default function (pi: ExtensionAPI) {
 			loopControl.iterations = 0;
 			loopControl.steering = [];
 			loopControl.steeringOnce = [];
+			loopControl.followUps = [];
+			loopControl.steeringSent = [];
+			loopControl.followUpsSent = [];
 			loopControl.paused = false;
 			loopControl.abortController = runAbortController;
 			loopControl.lastDetails = null;
@@ -2021,6 +2162,11 @@ export default function (pi: ExtensionAPI) {
 				const steeringOnceCount = loopControl.steeringOnce.length;
 				const steeringText = formatSteeringText([...loopControl.steering, ...loopControl.steeringOnce]);
 				const iterationParams = applySteeringToParams(baseLoopParams, steeringText);
+				const queuedFollowUps = loopControl.followUps;
+				if (queuedFollowUps.length > 0) {
+					loopControl.followUps = [];
+					loopControl.followUpsSent.push(...queuedFollowUps);
+				}
 				try {
 					runResult = await executeSubagentOnce(
 						iterationParams,
@@ -2028,6 +2174,7 @@ export default function (pi: ExtensionAPI) {
 						mergedSignal,
 						iterationUpdate,
 						registerActiveRun,
+						queuedFollowUps,
 					);
 				} catch (error: any) {
 					stopReason = mergedSignal?.aborted ? "aborted" : "error";
