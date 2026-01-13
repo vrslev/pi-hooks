@@ -279,7 +279,7 @@ type LoopViewerEntry =
 			type: "toolExecution";
 			toolName: string;
 			args: Record<string, any>;
-			result: { content: (TextContent | ImageContent)[]; details?: any; isError: boolean };
+			result: { content: (TextContent | ImageContent)[]; details?: any; isError: boolean; isPartial?: boolean };
 		};
 
 function buildEntryComponent(entry: LoopViewerEntry, theme: any, ui: any, cwd: string) {
@@ -305,7 +305,7 @@ function buildEntryComponent(entry: LoopViewerEntry, theme: any, ui: any, cwd: s
 					ui,
 					cwd,
 				);
-				toolComp.updateResult(entry.result, false);
+				toolComp.updateResult(entry.result, Boolean(entry.result.isPartial));
 				return toolComp;
 			}
 			const argsText = JSON.stringify(entry.args ?? {}, null, 2);
@@ -317,6 +317,8 @@ function buildEntryComponent(entry: LoopViewerEntry, theme: any, ui: any, cwd: s
 			if (output) {
 				const color = entry.result.isError ? "error" : "toolOutput";
 				container.addChild(new Text(theme.fg(color, output), 1, 0));
+			} else if (entry.result.isPartial) {
+				container.addChild(new Text(theme.fg("dim", "(running...)"), 1, 0));
 			}
 			return container;
 		}
@@ -415,6 +417,8 @@ function formatLoopEntriesText(loopDetails: RalphLoopDetails): string {
 				if (output) {
 					const language = getLanguageForToolOutput(entry.toolName, entry.args);
 					lines.push(language ? `\`\`\`${language}` : "```", output, "```");
+				} else if (entry.result.isPartial) {
+					lines.push("_(running...)_");
 				} else {
 					lines.push("_(no output)_");
 				}
@@ -509,6 +513,7 @@ function buildLoopEntries(loopDetails: RalphLoopDetails): LoopViewerEntry[] {
 							content: msg.content,
 							details: msg.details,
 							isError: msg.isError,
+							isPartial: msg.isPartial,
 						},
 					});
 				}
@@ -915,6 +920,35 @@ async function runSingleAgent(
 				}, 2000);
 			};
 
+			const upsertToolResult = (
+				toolCallId: string,
+				toolName: string,
+				result: any,
+				isError: boolean,
+				isPartial: boolean,
+			) => {
+				const existingIndex = currentResult.messages.findIndex(
+					(msg: any) => msg.role === "toolResult" && msg.toolCallId === toolCallId,
+				);
+				const existing = existingIndex >= 0 ? (currentResult.messages[existingIndex] as any) : null;
+				const toolMessage = {
+					role: "toolResult",
+					toolCallId,
+					toolName: toolName || existing?.toolName || "",
+					content: result?.content || [],
+					details: result?.details,
+					isError,
+					isPartial,
+					timestamp: Date.now(),
+				};
+				if (existingIndex >= 0) {
+					currentResult.messages[existingIndex] = { ...existing, ...toolMessage } as Message;
+				} else {
+					currentResult.messages.push(toolMessage as Message);
+				}
+				emitUpdate();
+			};
+
 			const processEvent = (event: any) => {
 				if (event.type === "message_end" && event.message) {
 					const msg = event.message as Message;
@@ -939,18 +973,20 @@ async function runSingleAgent(
 					return;
 				}
 
+				if (event.type === "tool_execution_start" && event.toolCallId) {
+					upsertToolResult(event.toolCallId, event.toolName || "", { content: [], details: undefined }, false, true);
+					return;
+				}
+
+				if (event.type === "tool_execution_update" && event.toolCallId) {
+					const partial = event.partialResult ?? { content: [], details: undefined };
+					upsertToolResult(event.toolCallId, event.toolName || "", partial, false, true);
+					return;
+				}
+
 				if (event.type === "tool_execution_end" && event.toolCallId) {
-					const toolMessage = {
-						role: "toolResult",
-						toolCallId: event.toolCallId,
-						toolName: event.toolName || "",
-						content: event.result?.content || [],
-						details: event.result?.details,
-						isError: Boolean(event.isError),
-						timestamp: Date.now(),
-					};
-					currentResult.messages.push(toolMessage as Message);
-					emitUpdate();
+					const result = event.result ?? { content: [], details: undefined };
+					upsertToolResult(event.toolCallId, event.toolName || "", result, Boolean(event.isError), false);
 					return;
 				}
 
