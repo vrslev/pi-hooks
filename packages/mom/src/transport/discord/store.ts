@@ -61,7 +61,7 @@ export class DiscordChannelStore {
 
 			const filename = this.generateLocalFilename(file.name, timestamp);
 			const localPath = join(channelDir, "attachments", filename);
-			const relativeLocalPath = relative(this.workingDir, localPath).replaceAll("\\", "/");
+			const relativeLocalPath = relative(this.workingDir, localPath).replace(/\\/g, "/");
 
 			attachments.push({
 				original: file.name,
@@ -87,7 +87,7 @@ export class DiscordChannelStore {
 		}
 
 		const logPath = join(this.getChannelDir(channelId, guildId), "log.jsonl");
-		const line = JSON.stringify(message) + "\n";
+		const line = `${JSON.stringify(message)}\n`;
 		await appendFile(logPath, line, "utf-8");
 		return true;
 	}

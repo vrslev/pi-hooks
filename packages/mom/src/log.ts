@@ -259,7 +259,7 @@ export function formatUsageSummaryText(
 	lines.push(`Tokens: \`${formatNum(usage.input)}\` in  \`${formatNum(usage.output)}\` out`);
 
 	if (contextTokens && contextWindow) {
-		const percent = ((contextTokens / contextWindow) * 100).toFixed(1) + "%";
+		const percent = `${((contextTokens / contextWindow) * 100).toFixed(1)}%`;
 		lines.push(`Context: \`${percent}\` of ${formatNum(contextWindow)}`);
 	}
 

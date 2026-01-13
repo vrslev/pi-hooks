@@ -763,3 +763,51 @@ export function parseKey(data: string): string | undefined {
 
 	return undefined;
 }
+
+export function isArrowUp(data: string): boolean {
+	return matchesKey(data, Key.up);
+}
+
+export function isArrowDown(data: string): boolean {
+	return matchesKey(data, Key.down);
+}
+
+export function isArrowLeft(data: string): boolean {
+	return matchesKey(data, Key.left);
+}
+
+export function isArrowRight(data: string): boolean {
+	return matchesKey(data, Key.right);
+}
+
+export function isEnter(data: string): boolean {
+	return matchesKey(data, Key.enter) || matchesKey(data, Key.return);
+}
+
+export function isEscape(data: string): boolean {
+	return matchesKey(data, Key.escape) || matchesKey(data, Key.esc);
+}
+
+export function isCtrlC(data: string): boolean {
+	return matchesKey(data, Key.ctrl("c"));
+}
+
+export function isCtrlD(data: string): boolean {
+	return matchesKey(data, Key.ctrl("d"));
+}
+
+export function isCtrlO(data: string): boolean {
+	return matchesKey(data, Key.ctrl("o"));
+}
+
+export function isCtrlP(data: string): boolean {
+	return matchesKey(data, Key.ctrl("p"));
+}
+
+export function isCtrlT(data: string): boolean {
+	return matchesKey(data, Key.ctrl("t"));
+}
+
+export function isShiftTab(data: string): boolean {
+	return matchesKey(data, Key.shift("tab"));
+}

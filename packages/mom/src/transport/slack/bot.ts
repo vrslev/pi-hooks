@@ -433,6 +433,10 @@ export class SlackBot {
 
 			if (isDM) {
 				if (!this.settingsManager?.canUserDM("slack", e.user)) {
+					log.logWarning(
+						`Slack: DM from ${e.user} blocked - DMs not authorized`,
+						`To enable DMs, add "allowDMs": true to settings.json in ${this.workingDir}`,
+					);
 					return;
 				}
 

@@ -1,4 +1,5 @@
-import type { AgentTool, TextContent } from "@mariozechner/pi-ai";
+import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { TextContent } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import type { TransportContext } from "../transport/types.js";
 

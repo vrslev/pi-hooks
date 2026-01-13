@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Restored legacy key helper exports used by older coding-agent builds
+
 ## [0.43.0] - 2026-01-11
 
 ### Added

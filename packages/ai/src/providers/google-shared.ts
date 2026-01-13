@@ -233,8 +233,6 @@ export function mapStopReason(reason: FinishReason): StopReason {
 		case FinishReason.SAFETY:
 		case FinishReason.IMAGE_SAFETY:
 		case FinishReason.IMAGE_PROHIBITED_CONTENT:
-		case FinishReason.IMAGE_RECITATION:
-		case FinishReason.IMAGE_OTHER:
 		case FinishReason.RECITATION:
 		case FinishReason.FINISH_REASON_UNSPECIFIED:
 		case FinishReason.OTHER:
@@ -244,8 +242,8 @@ export function mapStopReason(reason: FinishReason): StopReason {
 		case FinishReason.NO_IMAGE:
 			return "error";
 		default: {
-			const _exhaustive: never = reason;
-			throw new Error(`Unhandled stop reason: ${_exhaustive}`);
+			// Handle missing constants in older @google/genai versions
+			return "error";
 		}
 	}
 }

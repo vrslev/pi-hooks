@@ -35,9 +35,21 @@ export {
 } from "./keybindings.js";
 // Keyboard input handling
 export {
+	isArrowDown,
+	isArrowLeft,
+	isArrowRight,
+	isArrowUp,
+	isCtrlC,
+	isCtrlD,
+	isCtrlO,
+	isCtrlP,
+	isCtrlT,
+	isEnter,
+	isEscape,
 	isKeyRelease,
 	isKeyRepeat,
 	isKittyProtocolActive,
+	isShiftTab,
 	Key,
 	type KeyEventType,
 	type KeyId,

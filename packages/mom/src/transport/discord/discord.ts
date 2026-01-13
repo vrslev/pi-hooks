@@ -27,6 +27,7 @@ import type {
 	ChannelInfo,
 	FormatterOutput,
 	ToolResultData,
+	ToolStartData,
 	TransportContext,
 	UsageSummaryData,
 	UserInfo,
@@ -185,6 +186,10 @@ export class MomDiscordBot {
 			if (isDM) {
 				// Check DM authorization (silent reject if not allowed)
 				if (!this.settingsManager?.canUserDM("discord", message.author.id)) {
+					log.logWarning(
+						`Discord: DM from ${message.author.id} (${userName}) blocked - DMs not authorized`,
+						`To enable DMs, add "allowDMs": true to settings.json in ${this.workingDir}`,
+					);
 					return;
 				}
 				const ctx = await this.createContextFromMessage(
@@ -217,7 +222,20 @@ export class MomDiscordBot {
 
 			if (interaction.customId.startsWith("mom-stop-")) {
 				const channelId = interaction.customId.replace("mom-stop-", "");
-				await interaction.deferUpdate();
+				try {
+					await interaction.deferUpdate();
+				} catch (err) {
+					// Interaction may have expired (Discord interactions expire after 3 seconds)
+					// Error code 10062 = "Unknown interaction"
+					const isExpired = err instanceof Error && "code" in err && (err as { code: number }).code === 10062;
+					if (!isExpired) {
+						log.logWarning(
+							"Discord: Failed to defer button interaction",
+							err instanceof Error ? err.message : String(err),
+						);
+					}
+					// Continue with stop handler even if interaction expired
+				}
 				if (this.handler.onStopButton) {
 					await this.handler.onStopButton(channelId);
 				}
@@ -561,20 +579,35 @@ export class MomDiscordBot {
 		postEmbed: (embed: EmbedBuilder) => Promise<Message>;
 		uploadFile: (filePath: string, title?: string) => Promise<void>;
 	}): TransportContext {
-		let responseMessage: Message | null = null;
-		let primaryComponents: ActionRowBuilder<ButtonBuilder>[] = [];
+		let statusMessage: Message | null = null; // Shows current status (e.g., "→ Running bash")
 
-		// `overflowMessages` are used to hold overflow of the primary response (kept in sync via edits).
-		// `secondaryMessages` are "append-only" auxiliary messages (tool results, explicit secondary sends, etc).
-		const overflowMessages: Message[] = [];
+		let finalResponseMessage: Message | null = null; // The actual response
+		const responseOverflowMessages: Message[] = []; // Overflow messages for long responses
+		const emptyComponents: ActionRowBuilder<ButtonBuilder>[] = []; // Status message has no components
+
+		// `secondaryMessages` are "append-only" auxiliary messages (tool results, usage summary, etc.)
 		const secondaryMessages: Message[] = [];
 
-		// Thread for tool results (created lazily from primary message)
+		// Track tool result messages with their full embed data for collapse/expand
+		const toolResultMessages: Array<{ message: Message; fullEmbed: EmbedBuilder; collapsedEmbed: EmbedBuilder }> = [];
+
+		// Track usage summary for posting after final response
+		let usageSummaryMessage: Message | null = null;
+		let bufferedUsageSummaryEmbed: EmbedBuilder | null = null;
+
+		// Thread for tool results (created lazily)
 		let toolThread: ThreadChannel | null = null;
 
-		let accumulatedText = "";
+		// Buffer for accumulating status text during the run
+		let statusText = "";
 		let isWorking = true;
 		const workingIndicator = " ...";
+
+		// Buffer for the final response (posted at the end)
+		let bufferedFinalResponse = "";
+
+		// Promise chain to serialize all Discord API operations (like Slack does)
+		let updatePromise = Promise.resolve();
 
 		const formatting = {
 			italic: (t: string) => `*${t}*`,
@@ -585,10 +618,10 @@ export class MomDiscordBot {
 
 		const getOrCreateThread = async (): Promise<ThreadChannel | null> => {
 			if (toolThread) return toolThread;
-			if (!responseMessage) return null;
-			if (!responseMessage.channel || responseMessage.channel.type === ChannelType.DM) return null;
+			if (!statusMessage) return null;
+			if (!statusMessage.channel || statusMessage.channel.type === ChannelType.DM) return null;
 			try {
-				toolThread = await responseMessage.startThread({
+				toolThread = await statusMessage.startThread({
 					name: "Details",
 					autoArchiveDuration: ThreadAutoArchiveDuration.OneHour,
 				});
@@ -599,46 +632,17 @@ export class MomDiscordBot {
 			}
 		};
 
-		const syncOverflowMessages = async (overflowParts: string[]): Promise<void> => {
-			for (let i = 0; i < overflowParts.length; i++) {
-				const part = overflowParts[i];
-				const existing = overflowMessages[i];
-				if (existing) {
-					try {
-						await existing.edit(part);
-					} catch {
-						const posted = await params.postText(part);
-						try {
-							await existing.delete();
-						} catch {
-							// ignore
-						}
-						overflowMessages[i] = posted;
-					}
-				} else {
-					const posted = await params.postText(part);
-					overflowMessages.push(posted);
-				}
-			}
+		// Track whether stop button is currently shown
+		let hasStopButton = false;
 
-			for (let i = overflowMessages.length - 1; i >= overflowParts.length; i--) {
-				const msg = overflowMessages[i];
-				try {
-					await msg.delete();
-				} catch {
-					// ignore
-				}
-				overflowMessages.pop();
+		const editOrSendStatus = async (content: string): Promise<Message> => {
+			const components = hasStopButton ? [buildStopButton()] : emptyComponents;
+			if (statusMessage) {
+				await statusMessage.edit({ content, components });
+				return statusMessage;
 			}
-		};
-
-		const editOrSendPrimary = async (content: string): Promise<Message> => {
-			if (responseMessage) {
-				await responseMessage.edit({ content, components: primaryComponents });
-				return responseMessage;
-			}
-			const posted = await params.postPrimary({ content, components: primaryComponents });
-			responseMessage = posted;
+			const posted = await params.postPrimary({ content, components });
+			statusMessage = posted;
 			return posted;
 		};
 
@@ -656,21 +660,118 @@ export class MomDiscordBot {
 			}
 		};
 
-		const addStopButton = async (): Promise<void> => {
+		// Track showToolResults state for this context (mutable for toggle button)
+		// If collapseDetailsOnComplete is enabled, start collapsed
+		const collapseOnComplete = this.settingsManager?.collapseDetailsOnComplete ?? false;
+		const localShowToolResults = collapseOnComplete ? false : (this.settingsManager?.showToolResults ?? true);
+
+		const buildStopButton = (): ActionRowBuilder<ButtonBuilder> => {
 			const stopButton = new ButtonBuilder()
 				.setCustomId(`mom-stop-${params.message.channelId}`)
 				.setLabel("Stop")
 				.setStyle(ButtonStyle.Danger);
-			const row = new ActionRowBuilder<ButtonBuilder>().addComponents(stopButton);
-			primaryComponents = [row];
-			if (!responseMessage) return;
-			await responseMessage.edit({ content: responseMessage.content, components: primaryComponents });
+			return new ActionRowBuilder<ButtonBuilder>().addComponents(stopButton);
+		};
+
+		const postFinalResponseMessage = async (content: string): Promise<void> => {
+			// Delete old response messages
+			if (finalResponseMessage) {
+				try {
+					await finalResponseMessage.delete();
+				} catch {
+					// ignore
+				}
+				finalResponseMessage = null;
+			}
+			for (const msg of responseOverflowMessages) {
+				try {
+					await msg.delete();
+				} catch {
+					// ignore
+				}
+			}
+			responseOverflowMessages.length = 0;
+
+			if (!content.trim()) return;
+
+			// Split content if too long
+			const parts = this.splitMessage(content, DISCORD_PRIMARY_MAX_CHARS);
+			if (parts.length === 0) return;
+
+			// Post all parts
+			for (let i = 0; i < parts.length; i++) {
+				const msg = await params.postText(parts[i]);
+				if (i === 0) {
+					finalResponseMessage = msg;
+				} else {
+					responseOverflowMessages.push(msg);
+				}
+			}
+		};
+
+		const addStopButton = async (): Promise<void> => {
+			hasStopButton = true;
+			const row = buildStopButton();
+			if (statusMessage) {
+				try {
+					await statusMessage.edit({ content: statusMessage.content, components: [row] });
+				} catch {
+					// ignore
+				}
+			} else {
+				statusMessage = await params.postPrimary({ content: "-# *Thinking...*", components: [row] });
+			}
 		};
 
 		const removeStopButton = async (): Promise<void> => {
-			primaryComponents = [];
-			if (!responseMessage) return;
-			await responseMessage.edit({ content: responseMessage.content, components: primaryComponents });
+			hasStopButton = false;
+			if (statusMessage) {
+				try {
+					await statusMessage.edit({ content: statusMessage.content, components: [] });
+				} catch {
+					// ignore
+				}
+			}
+		};
+
+		// Map of toolCallId -> { message, entry in toolResultMessages }
+		const pendingToolMessages = new Map<string, { message: Message; index: number }>();
+
+		const startToolResult = async (data: ToolStartData): Promise<void> => {
+			const rawTitle = `⏳ ${data.toolName}${data.label ? `: ${data.label}` : ""}`;
+			const title =
+				rawTitle.length > DISCORD_EMBED_TITLE_MAX_CHARS
+					? `${rawTitle.slice(0, DISCORD_EMBED_TITLE_MAX_CHARS - 3)}...`
+					: rawTitle;
+
+			// Initial "running" embed - show collapsed version if collapseOnComplete is enabled
+			const runningEmbed = new EmbedBuilder().setTitle(title).setColor(0x808080); // Gray for running
+
+			if (localShowToolResults && data.args?.trim()) {
+				const truncatedArgs =
+					data.args.length > DISCORD_EMBED_ARGS_MAX_CHARS
+						? `${data.args.slice(0, DISCORD_EMBED_ARGS_MAX_CHARS - 3)}...`
+						: data.args;
+				runningEmbed.addFields({ name: "Arguments", value: `\`\`\`\n${truncatedArgs}\n\`\`\``, inline: false });
+				runningEmbed.setDescription("*Running...*");
+			}
+			// When collapsed, just show title (no args, no description)
+
+			const thread = await getOrCreateThread();
+			let msg: Message;
+			if (thread) {
+				msg = await thread.send({ embeds: [runningEmbed] });
+			} else {
+				msg = await params.postEmbed(runningEmbed);
+			}
+			secondaryMessages.push(msg);
+
+			// Create placeholder entries - will be updated when tool completes
+			const placeholderFull = new EmbedBuilder();
+			const placeholderCollapsed = new EmbedBuilder();
+			const index = toolResultMessages.length;
+			toolResultMessages.push({ message: msg, fullEmbed: placeholderFull, collapsedEmbed: placeholderCollapsed });
+			pendingToolMessages.set(data.toolCallId, { message: msg, index });
 		};
 
 		const sendToolResult = async (data: ToolResultData): Promise<void> => {
@@ -678,10 +779,11 @@ export class MomDiscordBot {
 			const rawTitle = `${titlePrefix} ${data.toolName}${data.label ? `: ${data.label}` : ""}`;
 			const title =
 				rawTitle.length > DISCORD_EMBED_TITLE_MAX_CHARS
-					? rawTitle.slice(0, DISCORD_EMBED_TITLE_MAX_CHARS - 3) + "..."
+					? `${rawTitle.slice(0, DISCORD_EMBED_TITLE_MAX_CHARS - 3)}...`
 					: rawTitle;
 
-			const embed = new EmbedBuilder()
+			// Full embed with all details
+			const fullEmbed = new EmbedBuilder()
 				.setTitle(title)
 				.setColor(data.isError ? 0xff0000 : 0x00ff00)
 				.setFooter({ text: `Duration: ${data.durationSecs}s` });
@@ -689,24 +791,53 @@ export class MomDiscordBot {
 			if (data.args?.trim()) {
 				const truncatedArgs =
 					data.args.length > DISCORD_EMBED_ARGS_MAX_CHARS
-						? data.args.slice(0, DISCORD_EMBED_ARGS_MAX_CHARS - 3) + "..."
+						? `${data.args.slice(0, DISCORD_EMBED_ARGS_MAX_CHARS - 3)}...`
 						: data.args;
-				embed.addFields({ name: "Arguments", value: "```\n" + truncatedArgs + "\n```", inline: false });
+				fullEmbed.addFields({ name: "Arguments", value: `\`\`\`\n${truncatedArgs}\n\`\`\``, inline: false });
 			}
 
 			const truncatedResult =
 				data.result.length > DISCORD_EMBED_DESCRIPTION_MAX_CHARS
-					? data.result.slice(0, DISCORD_EMBED_DESCRIPTION_MAX_CHARS - 3) + "..."
+					? `${data.result.slice(0, DISCORD_EMBED_DESCRIPTION_MAX_CHARS - 3)}...`
 					: data.result;
-			embed.setDescription("```\n" + truncatedResult + "\n```");
+			fullEmbed.setDescription(`\`\`\`\n${truncatedResult}\n\`\`\``);
 
-			const thread = await getOrCreateThread();
-			if (thread) {
-				const msg = await thread.send({ embeds: [embed] });
-				secondaryMessages.push(msg);
+			// Collapsed embed with just title and duration
+			const collapsedEmbed = new EmbedBuilder()
+				.setTitle(title)
+				.setColor(data.isError ? 0xff0000 : 0x00ff00)
+				.setFooter({ text: `Duration: ${data.durationSecs}s` });
+
+			// Choose which embed to show based on current state
+			const embedToShow = localShowToolResults ? fullEmbed : collapsedEmbed;
+
+			// Check if we have a pending message to update
+			const pending = pendingToolMessages.get(data.toolCallId);
+			if (pending) {
+				// Update the existing message
+				try {
+					await pending.message.edit({ embeds: [embedToShow] });
+					// Update the stored embeds for toggle functionality
+					toolResultMessages[pending.index] = {
+						message: pending.message,
+						fullEmbed,
+						collapsedEmbed,
+					};
+				} catch (err) {
+					log.logWarning("Failed to update tool result embed", err instanceof Error ? err.message : String(err));
+				}
+				pendingToolMessages.delete(data.toolCallId);
 			} else {
-				const msg = await params.postEmbed(embed);
+				// No pending message (startToolResult wasn't called), post new message
+				const thread = await getOrCreateThread();
+				let msg: Message;
+				if (thread) {
+					msg = await thread.send({ embeds: [embedToShow] });
+				} else {
+					msg = await params.postEmbed(embedToShow);
+				}
 				secondaryMessages.push(msg);
+				toolResultMessages.push({ message: msg, fullEmbed, collapsedEmbed });
 			}
 		};
 
@@ -715,62 +846,73 @@ export class MomDiscordBot {
 			const formatCost = (n: number) => `$${n.toFixed(4)}`;
 
 			if (formatterOutput) {
-				const embed = new EmbedBuilder()
+				const fullEmbed = new EmbedBuilder()
 					.setColor(formatterOutput.color ?? 0x2b2d31)
 					.setAuthor({ name: formatterOutput.title ?? "Usage Summary" });
 
 				if (formatterOutput.fields) {
 					for (const field of formatterOutput.fields) {
-						embed.addFields({ name: field.name, value: field.value, inline: field.inline ?? true });
+						fullEmbed.addFields({ name: field.name, value: field.value, inline: field.inline ?? true });
 					}
 				}
 
 				if (formatterOutput.footer) {
-					embed.setFooter({ text: formatterOutput.footer });
+					fullEmbed.setFooter({ text: formatterOutput.footer });
 				}
 
-				const summaryMsg = await params.postEmbed(embed);
-				secondaryMessages.push(summaryMsg);
+				// Collapsed version - just the title
+				const collapsedEmbed = new EmbedBuilder()
+					.setColor(formatterOutput.color ?? 0x2b2d31)
+					.setAuthor({ name: formatterOutput.title ?? "Usage Summary" });
+
+				// Buffer for posting after final response
+				bufferedUsageSummaryEmbed = localShowToolResults ? fullEmbed : collapsedEmbed;
 				return;
 			}
 
-			const embed = new EmbedBuilder().setColor(0x2b2d31).setAuthor({ name: "Usage Summary" });
+			const fullEmbed = new EmbedBuilder().setColor(0x2b2d31).setAuthor({ name: "Usage Summary" });
 
-			embed.addFields({
+			fullEmbed.addFields({
 				name: "Tokens",
 				value: `\`${formatNum(data.tokens.input)}\` in  \`${formatNum(data.tokens.output)}\` out`,
 				inline: true,
 			});
 
-			embed.addFields({
+			fullEmbed.addFields({
 				name: "Context",
 				value: `\`${data.context.percent}\` of ${formatNum(data.context.max)}`,
 				inline: true,
 			});
 
-			embed.addFields({
+			fullEmbed.addFields({
 				name: "Cost",
 				value: `**${formatCost(data.cost.total)}**`,
 				inline: true,
 			});
 
 			if (data.cache.read > 0 || data.cache.write > 0) {
-				embed.addFields({
+				fullEmbed.addFields({
 					name: "Cache",
 					value: `\`${formatNum(data.cache.read)}\` read  \`${formatNum(data.cache.write)}\` write`,
 					inline: true,
 				});
 			}
 
-			embed.setFooter({
+			fullEmbed.setFooter({
 				text: `In: ${formatCost(data.cost.input)} | Out: ${formatCost(data.cost.output)} | Cache read: ${formatCost(data.cost.cacheRead)} | Cache write: ${formatCost(data.cost.cacheWrite)}`,
 			});
 
-			const summaryMsg = await params.postEmbed(embed);
-			secondaryMessages.push(summaryMsg);
+			// Collapsed version - just shows cost
+			const collapsedEmbed = new EmbedBuilder()
+				.setColor(0x2b2d31)
+				.setAuthor({ name: `Usage: ${formatCost(data.cost.total)}` });
+
+			// Buffer for posting after final response
+			const embedToShow = localShowToolResults ? fullEmbed : collapsedEmbed;
+			bufferedUsageSummaryEmbed = embedToShow;
 		};
 
-		return {
+		const ctx: TransportContext = {
 			transport: "discord",
 			workingDir: params.workingDir,
 			channelDir: params.channelDir,
@@ -784,98 +926,193 @@ export class MomDiscordBot {
 			limits: { responseMaxChars: DISCORD_PRIMARY_MAX_CHARS, detailsMaxChars: DISCORD_SECONDARY_MAX_CHARS },
 			duplicateResponseToDetails: false,
 			showDetails: this.settingsManager?.showDetails ?? true,
-			showToolResults: this.settingsManager?.showToolResults ?? true,
+			get showToolResults() {
+				return localShowToolResults;
+			},
 
 			send: async (target, content, opts) => {
-				const shouldLog = opts?.log ?? true;
-				if (target === "details") {
-					await sendSecondary(content);
-					return;
-				}
+				const _shouldLog = opts?.log ?? true;
+				updatePromise = updatePromise.then(async () => {
+					if (target === "details") {
+						await sendSecondary(content);
+						return;
+					}
 
-				accumulatedText = accumulatedText ? accumulatedText + "\n" + content : content;
-				const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
-
-				const parts = this.splitMessage(displayText, DISCORD_PRIMARY_MAX_CHARS);
-				const primary = await editOrSendPrimary(parts[0]);
-
-				if (shouldLog) {
-					await this.store.logBotResponse(params.message.channelId, content, primary.id, params.guildId);
-				}
-
-				await syncOverflowMessages(parts.slice(1));
+					// During the run, update the status message with tool labels etc.
+					// Buffer the actual response text for posting at the end
+					if (
+						content.startsWith("*→") ||
+						content.startsWith("*Error:") ||
+						content.startsWith("*Compacting") ||
+						content.startsWith("*Retrying")
+					) {
+						// This is a status update (tool label, error, etc.) - show in status message
+						statusText = statusText ? `${statusText}\n${content}` : content;
+						const displayText = isWorking ? statusText + workingIndicator : statusText;
+						await editOrSendStatus(displayText);
+					} else {
+						// This is actual response content - buffer it for later
+						bufferedFinalResponse = bufferedFinalResponse ? `${bufferedFinalResponse}\n${content}` : content;
+						// Don't log yet - will log when posting final response
+					}
+				});
+				await updatePromise;
 			},
 
 			replaceResponse: async (content) => {
-				accumulatedText = content;
-				const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
-				const parts = this.splitMessage(displayText, DISCORD_PRIMARY_MAX_CHARS);
-				await editOrSendPrimary(parts[0]);
-				await syncOverflowMessages(parts.slice(1));
+				updatePromise = updatePromise.then(async () => {
+					bufferedFinalResponse = content;
+				});
+				await updatePromise;
 			},
 
 			setTyping: async (isTyping) => {
 				if (!isTyping) return;
-				if (params.sendTyping) {
-					await params.sendTyping();
-				}
-				if (!responseMessage) {
-					accumulatedText = "-# *Thinking...*";
-					await editOrSendPrimary(accumulatedText + workingIndicator);
-				}
+				updatePromise = updatePromise.then(async () => {
+					if (params.sendTyping) {
+						await params.sendTyping();
+					}
+					if (!statusMessage) {
+						statusText = "-# *Thinking...*";
+						await editOrSendStatus(statusText + workingIndicator);
+					}
+				});
+				await updatePromise;
 			},
 
 			uploadFile: async (filePath, title) => {
-				await params.uploadFile(filePath, title);
+				updatePromise = updatePromise.then(async () => {
+					await params.uploadFile(filePath, title);
+				});
+				await updatePromise;
 			},
 
 			setWorking: async (working) => {
-				isWorking = working;
-				if (responseMessage) {
-					const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
-					const parts = this.splitMessage(displayText, DISCORD_PRIMARY_MAX_CHARS);
-					await responseMessage.edit({ content: parts[0], components: primaryComponents });
-					await syncOverflowMessages(parts.slice(1));
-				}
+				updatePromise = updatePromise.then(async () => {
+					isWorking = working;
+					if (statusMessage) {
+						const displayText = isWorking ? statusText + workingIndicator : statusText;
+						await statusMessage.edit({ content: displayText, components: emptyComponents });
+					}
+				});
+				await updatePromise;
 			},
 
 			deleteResponseAndDetails: async () => {
-				// Delete thread first (this also deletes messages inside it)
-				if (toolThread) {
-					try {
-						await toolThread.delete();
-					} catch {
-						// ignore
+				updatePromise = updatePromise.then(async () => {
+					// Delete final response message
+					if (finalResponseMessage) {
+						try {
+							await finalResponseMessage.delete();
+						} catch {
+							// ignore
+						}
+						finalResponseMessage = null;
 					}
-					toolThread = null;
-				}
-				secondaryMessages.length = 0;
 
-				for (let i = overflowMessages.length - 1; i >= 0; i--) {
-					try {
-						await overflowMessages[i].delete();
-					} catch {
-						// ignore
+					// Delete response overflow messages
+					for (const msg of responseOverflowMessages) {
+						try {
+							await msg.delete();
+						} catch {
+							// ignore
+						}
 					}
-				}
-				overflowMessages.length = 0;
+					responseOverflowMessages.length = 0;
 
-				if (responseMessage) {
-					try {
-						await responseMessage.delete();
-					} catch {
-						// ignore
+					// Delete thread (this also deletes messages inside it)
+					if (toolThread) {
+						try {
+							await toolThread.delete();
+						} catch {
+							// ignore
+						}
+						toolThread = null;
 					}
-					responseMessage = null;
-					primaryComponents = [];
-				}
+					secondaryMessages.length = 0;
+					toolResultMessages.length = 0;
+					usageSummaryMessage = null;
+					bufferedUsageSummaryEmbed = null;
+
+					// Delete status message
+					if (statusMessage) {
+						try {
+							await statusMessage.delete();
+						} catch {
+							// ignore
+						}
+						statusMessage = null;
+					}
+
+					// Clear buffers
+					statusText = "";
+					bufferedFinalResponse = "";
+				});
+				await updatePromise;
 			},
 
-			sendToolResult,
-			sendUsageSummary,
-			addStopControl: addStopButton,
-			removeStopControl: removeStopButton,
+			startToolResult: async (data) => {
+				updatePromise = updatePromise.then(() => startToolResult(data));
+				await updatePromise;
+			},
+			sendToolResult: async (data) => {
+				updatePromise = updatePromise.then(() => sendToolResult(data));
+				await updatePromise;
+			},
+			sendUsageSummary: async (data, formatterOutput) => {
+				updatePromise = updatePromise.then(() => sendUsageSummary(data, formatterOutput));
+				await updatePromise;
+			},
+			addStopControl: async () => {
+				updatePromise = updatePromise.then(() => addStopButton());
+				await updatePromise;
+			},
+			removeStopControl: async () => {
+				updatePromise = updatePromise.then(() => removeStopButton());
+				await updatePromise;
+			},
+
+			// Post the buffered final response (called after usage summary)
+			postFinalResponse: async () => {
+				updatePromise = updatePromise.then(async () => {
+					// Delete the status message since we're done
+					if (statusMessage) {
+						try {
+							await statusMessage.delete();
+						} catch {
+							// ignore
+						}
+						statusMessage = null;
+					}
+
+					// Post the final response
+					if (bufferedFinalResponse.trim()) {
+						await postFinalResponseMessage(bufferedFinalResponse);
+						// Log the response
+						if (finalResponseMessage) {
+							await this.store.logBotResponse(
+								params.message.channelId,
+								bufferedFinalResponse,
+								finalResponseMessage.id,
+								params.guildId,
+							);
+						}
+					}
+
+					// Post usage summary after the final response
+					if (bufferedUsageSummaryEmbed) {
+						usageSummaryMessage = await params.postEmbed(bufferedUsageSummaryEmbed);
+						secondaryMessages.push(usageSummaryMessage);
+					}
+				});
+				await updatePromise;
+			},
+
+			// Get the buffered response (for checking [SILENT] etc.)
+			getBufferedResponse: () => bufferedFinalResponse,
 		};
+
+		return ctx;
 	}
 
 	private async createContextFromMessage(

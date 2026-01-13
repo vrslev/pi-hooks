@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { getApiKey } from "@mariozechner/pi-ai";
 import type { ChatInputCommandInteraction, ModalSubmitInteraction } from "discord.js";
 import { join, resolve } from "path";
 import { type AgentRunner, getOrCreateRunner, getOrCreateRunnerForTransport, initializeModel } from "./agent.js";
@@ -33,8 +34,6 @@ type TransportArg = "slack" | "discord";
 const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
 const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const ANTHROPIC_OAUTH_TOKEN = process.env.ANTHROPIC_OAUTH_TOKEN;
 
 interface ParsedArgs {
 	workingDir?: string;
@@ -146,15 +145,30 @@ const workingDir = parsedArgs.workingDir;
 const sandbox = parsedArgs.sandbox;
 const transport = parsedArgs.transport;
 
-if (!ANTHROPIC_API_KEY && !ANTHROPIC_OAUTH_TOKEN) {
-	console.error("Missing env: ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN");
+let initializedModel: ReturnType<typeof initializeModel>;
+try {
+	initializedModel = initializeModel(parsedArgs.model, workingDir);
+} catch (err) {
+	console.error(err instanceof Error ? err.message : String(err));
 	process.exit(1);
 }
 
-try {
-	initializeModel(parsedArgs.model, workingDir);
-} catch (err) {
-	console.error(err instanceof Error ? err.message : String(err));
+// Validate API key for the selected provider
+const apiKey = getApiKey(initializedModel.provider);
+if (!apiKey) {
+	const envVarHint: Record<string, string> = {
+		anthropic: "ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN",
+		openai: "OPENAI_API_KEY",
+		google: "GEMINI_API_KEY",
+		mistral: "MISTRAL_API_KEY",
+		groq: "GROQ_API_KEY",
+		cerebras: "CEREBRAS_API_KEY",
+		xai: "XAI_API_KEY",
+		openrouter: "OPENROUTER_API_KEY",
+		zai: "ZAI_API_KEY",
+	};
+	const hint = envVarHint[initializedModel.provider] || `API key for ${initializedModel.provider}`;
+	console.error(`Missing env: ${hint}`);
 	process.exit(1);
 }
 
@@ -572,8 +586,8 @@ async function startDiscordBot({ workingDir, sandbox }: { workingDir: string; sa
 
 			if (action === "view") {
 				const max = 1800;
-				const shown = current.length > max ? current.slice(0, max) + "\n\n(truncated)" : current;
-				await interaction.reply({ content: "```markdown\n" + shown + "\n```", ephemeral: true });
+				const shown = current.length > max ? `${current.slice(0, max)}\n\n(truncated)` : current;
+				await interaction.reply({ content: `\`\`\`markdown\n${shown}\n\`\`\``, ephemeral: true });
 				return;
 			}
 

@@ -1,17 +1,27 @@
-import { Agent, type AgentEvent, type Attachment, ProviderTransport } from "@mariozechner/pi-agent-core";
-import { type Api, getApiKey, getModels, getProviders, type KnownProvider, type Model } from "@mariozechner/pi-ai";
+import { Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
+import {
+	type Api,
+	getModels,
+	getProviders,
+	type ImageContent,
+	type KnownProvider,
+	type Model,
+} from "@mariozechner/pi-ai";
 import {
 	AgentSession,
+	convertToLlm,
+	discoverAuthStorage,
+	discoverModels,
 	formatSkillsForPrompt,
 	loadSkillsFromDir,
-	messageTransformer,
+	SessionManager,
 	type Skill,
 } from "@mariozechner/pi-coding-agent";
 import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "fs";
 import { mkdir, writeFile } from "fs/promises";
 import { isAbsolute, join, relative, resolve } from "path";
-import { MomSessionManager, MomSettingsManager, syncLogToContext } from "./context.js";
+import { MomSettingsManager, syncLogToContext } from "./context.js";
 import * as log from "./log.js";
 import { formatUsageSummaryText } from "./log.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
@@ -22,6 +32,7 @@ import type {
 	ChannelInfo,
 	FormatterOutput,
 	ToolResultData,
+	ToolStartData,
 	TransportContext,
 	TransportName,
 	UserInfo,
@@ -131,7 +142,7 @@ export interface AgentRunner {
 	abort(): void;
 }
 
-function getAnthropicApiKey(): string {
+function _getAnthropicApiKey(): string {
 	const key = process.env.ANTHROPIC_OAUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
 	if (!key) {
 		throw new Error("ANTHROPIC_OAUTH_TOKEN or ANTHROPIC_API_KEY must be set");
@@ -165,7 +176,7 @@ function getMemory(workingDir: string, channelDir: string): string {
 		try {
 			const content = readFileSync(workspaceMemoryPath, "utf-8").trim();
 			if (content) {
-				parts.push("### Global Workspace Memory\n" + content);
+				parts.push(`### Global Workspace Memory\n${content}`);
 			}
 		} catch (error) {
 			log.logWarning("Failed to read workspace memory", `${workspaceMemoryPath}: ${error}`);
@@ -178,7 +189,7 @@ function getMemory(workingDir: string, channelDir: string): string {
 		try {
 			const content = readFileSync(channelMemoryPath, "utf-8").trim();
 			if (content) {
-				parts.push("### Channel-Specific Memory\n" + content);
+				parts.push(`### Channel-Specific Memory\n${content}`);
 			}
 		} catch (error) {
 			log.logWarning("Failed to read channel memory", `${channelMemoryPath}: ${error}`);
@@ -275,6 +286,17 @@ Avoid Slack mrkdwn link format (<url|text>).`;
 
 	const silentGuide = `For periodic events where there's nothing to report, respond with just \`[SILENT]\` (no other text). This deletes the status message and posts nothing. Use this to avoid spamming the channel when periodic checks find nothing actionable.`;
 
+	const fileUploadGuide =
+		transport === "discord"
+			? `## File Upload Limits
+Discord has an 8MB file upload limit (25MB for boosted servers). Before attaching files:
+- Check file size: \`ls -lh file\` or \`du -h file\`
+- For large videos: compress with ffmpeg (e.g., \`ffmpeg -i input.mp4 -vf "scale=-2:480" -c:v libx264 -crf 28 output.mp4\`)
+- For large images: resize or compress (e.g., \`convert input.png -resize 1920x1080\\> -quality 85 output.jpg\`)
+- Alternative: upload to a file hosting service and share the link instead`
+			: `## File Upload Limits
+Slack has a 1GB file upload limit per file, but very large files may still timeout. For files over 100MB, consider uploading to external storage and sharing a link.`;
+
 	return `You are mom, a bot assistant in a chat app. Be concise. No emojis.
 
 ## Identity (Important)
@@ -284,6 +306,8 @@ Avoid Slack mrkdwn link format (<url|text>).`;
 
 ## How to Respond
 Your text responses are automatically delivered to the channel. Do NOT try to send messages via curl, API calls, webhooks, or any other method. Just write your response as normal text output.
+
+**Important:** Always respond directly in the chat. Do NOT use the write tool to create files and then attach them unless the user explicitly asks for a file. Even for long responses, post the text directly - the transport handles message splitting automatically.
 
 ## Context
 - For current date/time, use: date
@@ -441,12 +465,14 @@ Format: \`{"date":"...","ts":"...","user":"...","userName":"...","text":"...","i
 	- profile: Update bot profile (persists to settings.json).${transport === "discord" ? " Discord: status (online/idle/dnd/invisible), activity (Playing/Watching/etc), avatar (URL or local path), username." : " Slack: username, iconEmoji, iconUrl (per-message overrides, requires chat:write.customize scope)."}
 
 Each tool requires a "label" parameter (shown to user).
+
+${fileUploadGuide}
 `;
 }
 
 function truncate(text: string, maxLen: number): string {
 	if (text.length <= maxLen) return text;
-	return text.substring(0, maxLen - 3) + "...";
+	return `${text.substring(0, maxLen - 3)}...`;
 }
 
 function extractToolResultText(result: unknown): string {
@@ -575,7 +601,7 @@ function createRunner(
 ): AgentRunner {
 	const executor = createExecutor(sandboxConfig);
 	const workspacePath = executor.getWorkspacePath(workingDir);
-	const channelRelPath = relative(workingDir, channelDir).replaceAll("\\", "/");
+	const channelRelPath = relative(workingDir, channelDir).replace(/\\/g, "/");
 	const model = getConfiguredModel();
 
 	// Mutable per-run state - referenced by the event handler and attach tool
@@ -636,7 +662,7 @@ function createRunner(
 				const relToWorkspace = relative(realWorkspaceRoot, realFilePath);
 				// Ensure attachments can only come from within the configured working directory (workspace root),
 				// even if the file path goes through symlinks.
-				const relNormalized = relToWorkspace.replaceAll("\\", "/");
+				const relNormalized = relToWorkspace.replace(/\\/g, "/");
 				const isOutside = isAbsolute(relToWorkspace) || relNormalized === ".." || relNormalized.startsWith("../");
 				if (relNormalized === "" || !isOutside) {
 					await ctx.uploadFile(realFilePath, title);
@@ -665,14 +691,20 @@ function createRunner(
 		transport,
 	);
 
+	// Create auth storage + model registry for API key resolution
+	const authStorage = discoverAuthStorage();
+	const modelRegistry = discoverModels(authStorage);
+
 	// Create session manager and settings manager
-	// Pass model info so new sessions get a header written immediately
-	const sessionManager = new MomSessionManager(channelDir, {
-		provider: model.provider,
-		id: model.id,
-		thinkingLevel: "off",
-	});
+	mkdirSync(channelDir, { recursive: true });
+	const sessionFile = join(channelDir, "context.jsonl");
+	const sessionManager = SessionManager.open(sessionFile, channelDir);
 	const settingsManager = new MomSettingsManager(workingDir);
+
+	if (sessionManager.getEntries().length === 0) {
+		sessionManager.appendModelChange(model.provider, model.id);
+		sessionManager.appendThinkingLevelChange("off");
+	}
 
 	// Create agent
 	const agent = new Agent({
@@ -682,14 +714,13 @@ function createRunner(
 			thinkingLevel: "off",
 			tools,
 		},
-		messageTransformer,
-		transport: new ProviderTransport({
-			getApiKey: async (provider) => getApiKey(provider),
-		}),
+		convertToLlm,
+		sessionId: sessionManager.getSessionId(),
+		getApiKey: async (provider: string) => authStorage.getApiKey(provider),
 	});
 
 	// Load existing messages
-	const loadedSession = sessionManager.loadSession();
+	const loadedSession = sessionManager.buildSessionContext();
 	if (
 		loadedSession.model &&
 		(loadedSession.model.provider !== model.provider || loadedSession.model.modelId !== model.id)
@@ -699,10 +730,10 @@ function createRunner(
 				`but configured model is ${model.provider}:${model.id}. Using configured model.`,
 		);
 		// Persist configured model so future loads don't keep "anthropic" (or other) stale metadata.
-		sessionManager.saveModelChange(model.provider, model.id);
+		sessionManager.appendModelChange(model.provider, model.id);
 		// Add a one-time marker to reduce identity confusion from old assistant messages in context.
 		// This is a context-only note (not a chat message), but it is stored in context.jsonl.
-		sessionManager.saveMessage({
+		sessionManager.appendMessage({
 			role: "user",
 			content:
 				`[system]: The underlying model for this bot is now ${model.provider}:${model.id}. ` +
@@ -718,8 +749,9 @@ function createRunner(
 	// Create AgentSession wrapper
 	const session = new AgentSession({
 		agent,
-		sessionManager: sessionManager as any,
+		sessionManager,
 		settingsManager: settingsManager as any,
+		modelRegistry,
 	});
 
 	// Subscribe to events ONCE
@@ -737,6 +769,11 @@ function createRunner(
 				const args = agentEvent.args as { label?: string };
 				const label = args.label || agentEvent.toolName;
 
+				const argsFormatted = formatToolArgsForSlack(
+					agentEvent.toolName,
+					agentEvent.args as Record<string, unknown>,
+				);
+
 				pendingTools.set(agentEvent.toolCallId, {
 					toolName: agentEvent.toolName,
 					args: agentEvent.args,
@@ -744,10 +781,22 @@ function createRunner(
 				});
 
 				log.logToolStart(logCtx, agentEvent.toolName, label, agentEvent.args as Record<string, unknown>);
-				queue.enqueue(
-					() => ctx.send("response", ctx.formatting.italic(`→ ${label}`), { log: false }),
-					"tool label",
-				);
+
+				// Post streaming tool result embed if transport supports it
+				if (ctx.showToolResults && ctx.startToolResult) {
+					const payload: ToolStartData = {
+						toolCallId: agentEvent.toolCallId,
+						toolName: agentEvent.toolName,
+						label,
+						args: argsFormatted,
+					};
+					queue.enqueue(() => ctx.startToolResult!(payload), "tool start");
+				} else {
+					queue.enqueue(
+						() => ctx.send("response", ctx.formatting.italic(`→ ${label}`), { log: false }),
+						"tool label",
+					);
+				}
 				break;
 			}
 			case "tool_execution_end": {
@@ -771,6 +820,7 @@ function createRunner(
 					: "";
 
 				const payload: ToolResultData = {
+					toolCallId: agentEvent.toolCallId,
 					toolName: agentEvent.toolName,
 					label,
 					args: argsFormatted,
@@ -786,7 +836,7 @@ function createRunner(
 						let msg = `${ctx.formatting.bold(`${agentEvent.isError ? "✗" : "✓"} ${agentEvent.toolName}`)}`;
 						if (label) msg += `: ${label}`;
 						msg += ` (${durationSecs}s)\n`;
-						if (argsFormatted.trim()) msg += ctx.formatting.codeBlock(argsFormatted) + "\n";
+						if (argsFormatted.trim()) msg += `${ctx.formatting.codeBlock(argsFormatted)}\n`;
 						msg += `${ctx.formatting.bold("Result:")}\n${ctx.formatting.codeBlock(resultStr)}`;
 						queue.enqueueMessage(msg, "details", "tool result", false);
 					}
@@ -919,7 +969,7 @@ function createRunner(
 
 			// Reload messages from context.jsonl
 			// This picks up any messages synced from log.jsonl before this run
-			const reloadedSession = sessionManager.loadSession();
+			const reloadedSession = sessionManager.buildSessionContext();
 			if (reloadedSession.messages.length > 0) {
 				agent.replaceMessages(reloadedSession.messages);
 				log.logInfo(`[${runnerKey}] Reloaded ${reloadedSession.messages.length} messages from context`);
@@ -974,7 +1024,7 @@ function createRunner(
 
 			{
 				const m = session.model;
-				const hasKey = m ? Boolean(getApiKey(m.provider)) : false;
+				const hasKey = m ? authStorage.hasAuth(m.provider) : false;
 				log.logInfo(
 					`[${runnerKey}] Request model=${m ? `${m.provider}:${m.id}` : "(none)"} ` +
 						`api=${m ? m.api : "(none)"} ` +
@@ -1040,7 +1090,7 @@ function createRunner(
 					userMessage += `\nReactions: ${reactionList}`;
 				}
 
-				const imageAttachments: Attachment[] = [];
+				const images: ImageContent[] = [];
 				const nonImagePaths: string[] = [];
 
 				if (ctx.message.attachments && ctx.message.attachments.length > 0) {
@@ -1052,14 +1102,10 @@ function createRunner(
 							try {
 								const content = readFileSync(fullPath);
 								const base64 = content.toString("base64");
-								const stats = statSync(fullPath);
-								imageAttachments.push({
-									id: a.local,
+								images.push({
 									type: "image",
-									fileName: a.local.split("/").pop() || a.local,
+									data: base64,
 									mimeType,
-									size: stats.size,
-									content: base64,
 								});
 							} catch {
 								nonImagePaths.push(fullPath);
@@ -1079,14 +1125,11 @@ function createRunner(
 					systemPrompt,
 					messages: session.messages,
 					newUserMessage: userMessage,
-					imageAttachmentCount: imageAttachments.length,
+					imageAttachmentCount: images.length,
 				};
 				await writeFile(join(channelDir, "last_prompt.jsonl"), JSON.stringify(debugContext, null, 2));
 
-				await session.prompt(
-					userMessage,
-					imageAttachments.length > 0 ? { attachments: imageAttachments } : undefined,
-				);
+				await session.prompt(userMessage, images.length > 0 ? { images } : undefined);
 
 				// Wait for queued messages
 				await queueChain;
@@ -1114,8 +1157,11 @@ function createRunner(
 							.map((c) => c.text)
 							.join("\n") || "";
 
+					// For Discord, use the buffered response; for others, use finalText directly
+					const responseToCheck = ctx.getBufferedResponse ? ctx.getBufferedResponse() : finalText;
+
 					// Check for [SILENT] marker - delete message and thread instead of posting
-					if (finalText.trim() === "[SILENT]" || finalText.trim().startsWith("[SILENT]")) {
+					if (responseToCheck.trim() === "[SILENT]" || responseToCheck.trim().startsWith("[SILENT]")) {
 						try {
 							await ctx.deleteResponseAndDetails();
 							wasSilent = true;
@@ -1124,12 +1170,16 @@ function createRunner(
 							const errMsg = err instanceof Error ? err.message : String(err);
 							log.logWarning("Failed to delete message for silent response", errMsg);
 						}
-					} else if (finalText.trim()) {
-						try {
-							await ctx.replaceResponse(finalText);
-						} catch (err) {
-							const errMsg = err instanceof Error ? err.message : String(err);
-							log.logWarning("Failed to replace message with final text", errMsg);
+					} else if (responseToCheck.trim()) {
+						// For non-Discord transports, replace response immediately
+						// For Discord, we'll post after usage summary via postFinalResponse
+						if (!ctx.postFinalResponse) {
+							try {
+								await ctx.replaceResponse(finalText);
+							} catch (err) {
+								const errMsg = err instanceof Error ? err.message : String(err);
+								log.logWarning("Failed to replace message with final text", errMsg);
+							}
 						}
 					}
 				}
@@ -1151,7 +1201,7 @@ function createRunner(
 							lastAssistantMessage.usage.cacheWrite
 						: 0;
 					const contextWindow = model.contextWindow || 200000;
-					const contextPercent = ((contextTokens / contextWindow) * 100).toFixed(1) + "%";
+					const contextPercent = `${((contextTokens / contextWindow) * 100).toFixed(1)}%`;
 
 					log.logUsageSummary(runState.logCtx!, runState.totalUsage, contextTokens, contextWindow);
 
@@ -1190,6 +1240,12 @@ function createRunner(
 					}
 				}
 
+				// For Discord: post the buffered final response after usage summary
+				if (!wasSilent && ctx.postFinalResponse) {
+					runState.queue.enqueue(() => ctx.postFinalResponse!(), "post final response");
+					await queueChain;
+				}
+
 				result = { stopReason: runState.stopReason, errorMessage: runState.errorMessage };
 				return result;
 			} finally {
@@ -1226,9 +1282,9 @@ function translateToHostPath(
 	workspacePath: string,
 	channelRelPath: string,
 ): string {
-	const normalizedWorkspacePath = workspacePath.replaceAll("\\", "/").replace(/\/$/, "");
-	const normalizedContainerPath = containerPath.replaceAll("\\", "/");
-	const normalizedChannelRelPath = channelRelPath.replaceAll("\\", "/").replace(/^\/+/, "").replace(/\/$/, "");
+	const normalizedWorkspacePath = workspacePath.replace(/\\/g, "/").replace(/\/$/, "");
+	const normalizedContainerPath = containerPath.replace(/\\/g, "/");
+	const normalizedChannelRelPath = channelRelPath.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/$/, "");
 
 	const channelPrefix = `${normalizedWorkspacePath}/${normalizedChannelRelPath}/`;
 	if (normalizedContainerPath.startsWith(channelPrefix)) {

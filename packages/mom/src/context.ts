@@ -6,264 +6,14 @@
  * - log.jsonl: Human-readable channel history for grep (no tool results)
  *
  * This module provides:
- * - MomSessionManager: Adapts coding-agent's SessionManager for channel-based storage
- * - MomSettingsManager: Simple settings for mom (compaction, retry, model preferences)
+ * - MomSettingsManager: Simple settings for mom
+ * - syncLogToContext: Sync channel log.jsonl into context.jsonl
  */
 
-import type { AgentState, AppMessage } from "@mariozechner/pi-agent-core";
-import {
-	type CompactionEntry,
-	type LoadedSession,
-	loadSessionFromEntries,
-	type ModelChangeEntry,
-	type SessionEntry,
-	type SessionHeader,
-	type SessionMessageEntry,
-	type ThinkingLevelChangeEntry,
-} from "@mariozechner/pi-coding-agent";
-import { randomBytes } from "crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import type { Message } from "@mariozechner/pi-ai";
+import { type SessionEntry, SessionManager } from "@mariozechner/pi-coding-agent";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-
-function uuidv4(): string {
-	const bytes = randomBytes(16);
-	bytes[6] = (bytes[6] & 0x0f) | 0x40;
-	bytes[8] = (bytes[8] & 0x3f) | 0x80;
-	const hex = bytes.toString("hex");
-	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
-}
-
-// ============================================================================
-// MomSessionManager - Channel-based session management
-// ============================================================================
-
-/**
- * Session manager for mom, storing context per Slack channel.
- *
- * Unlike coding-agent which creates timestamped session files, mom uses
- * a single context.jsonl per channel that persists across all @mentions.
- */
-export class MomSessionManager {
-	private sessionId: string;
-	private contextFile: string;
-	private channelDir: string;
-	private sessionInitialized: boolean = false;
-	private inMemoryEntries: SessionEntry[] = [];
-	private pendingEntries: SessionEntry[] = [];
-
-	constructor(channelDir: string, initialModel?: { provider: string; id: string; thinkingLevel?: string }) {
-		this.channelDir = channelDir;
-		this.contextFile = join(channelDir, "context.jsonl");
-
-		// Ensure channel directory exists
-		if (!existsSync(channelDir)) {
-			mkdirSync(channelDir, { recursive: true });
-		}
-
-		// Load existing session or create new
-		if (existsSync(this.contextFile)) {
-			this.inMemoryEntries = this.loadEntriesFromFile();
-			this.sessionId = this.extractSessionId() || uuidv4();
-			this.sessionInitialized = this.inMemoryEntries.length > 0;
-		} else {
-			// New session - write header immediately
-			this.sessionId = uuidv4();
-			if (initialModel) {
-				this.writeSessionHeader(initialModel);
-			}
-		}
-	}
-
-	/** Write session header to file (called on new session creation) */
-	private writeSessionHeader(model: { provider: string; id: string; thinkingLevel?: string }): void {
-		this.sessionInitialized = true;
-
-		const entry: SessionHeader = {
-			type: "session",
-			id: this.sessionId,
-			timestamp: new Date().toISOString(),
-			cwd: this.channelDir,
-			provider: model.provider,
-			modelId: model.id,
-			thinkingLevel: model.thinkingLevel || "off",
-		};
-
-		this.inMemoryEntries.push(entry);
-		appendFileSync(this.contextFile, JSON.stringify(entry) + "\n");
-	}
-
-	private extractSessionId(): string | null {
-		for (const entry of this.inMemoryEntries) {
-			if (entry.type === "session") {
-				return entry.id;
-			}
-		}
-		return null;
-	}
-
-	private loadEntriesFromFile(): SessionEntry[] {
-		if (!existsSync(this.contextFile)) return [];
-
-		const content = readFileSync(this.contextFile, "utf8");
-		const entries: SessionEntry[] = [];
-		const lines = content.trim().split("\n");
-
-		for (const line of lines) {
-			if (!line.trim()) continue;
-			try {
-				const entry = JSON.parse(line) as SessionEntry;
-				entries.push(entry);
-			} catch {
-				// Skip malformed lines
-			}
-		}
-
-		return entries;
-	}
-
-	/** Initialize session with header if not already done */
-	startSession(state: AgentState): void {
-		if (this.sessionInitialized) return;
-		this.sessionInitialized = true;
-
-		const entry: SessionHeader = {
-			type: "session",
-			id: this.sessionId,
-			timestamp: new Date().toISOString(),
-			cwd: this.channelDir,
-			provider: state.model?.provider || "unknown",
-			modelId: state.model?.id || "unknown",
-			thinkingLevel: state.thinkingLevel,
-		};
-
-		this.inMemoryEntries.push(entry);
-		for (const pending of this.pendingEntries) {
-			this.inMemoryEntries.push(pending);
-		}
-		this.pendingEntries = [];
-
-		// Write to file
-		appendFileSync(this.contextFile, JSON.stringify(entry) + "\n");
-		for (const memEntry of this.inMemoryEntries.slice(1)) {
-			appendFileSync(this.contextFile, JSON.stringify(memEntry) + "\n");
-		}
-	}
-
-	saveMessage(message: AppMessage): void {
-		const entry: SessionMessageEntry = {
-			type: "message",
-			timestamp: new Date().toISOString(),
-			message,
-		};
-
-		if (!this.sessionInitialized) {
-			this.pendingEntries.push(entry);
-		} else {
-			this.inMemoryEntries.push(entry);
-			appendFileSync(this.contextFile, JSON.stringify(entry) + "\n");
-		}
-	}
-
-	saveThinkingLevelChange(thinkingLevel: string): void {
-		const entry: ThinkingLevelChangeEntry = {
-			type: "thinking_level_change",
-			timestamp: new Date().toISOString(),
-			thinkingLevel,
-		};
-
-		if (!this.sessionInitialized) {
-			this.pendingEntries.push(entry);
-		} else {
-			this.inMemoryEntries.push(entry);
-			appendFileSync(this.contextFile, JSON.stringify(entry) + "\n");
-		}
-	}
-
-	saveModelChange(provider: string, modelId: string): void {
-		const entry: ModelChangeEntry = {
-			type: "model_change",
-			timestamp: new Date().toISOString(),
-			provider,
-			modelId,
-		};
-
-		if (!this.sessionInitialized) {
-			this.pendingEntries.push(entry);
-		} else {
-			this.inMemoryEntries.push(entry);
-			appendFileSync(this.contextFile, JSON.stringify(entry) + "\n");
-		}
-	}
-
-	saveCompaction(entry: CompactionEntry): void {
-		this.inMemoryEntries.push(entry);
-		appendFileSync(this.contextFile, JSON.stringify(entry) + "\n");
-	}
-
-	/** Load session with compaction support */
-	loadSession(): LoadedSession {
-		const entries = this.loadEntries();
-		return loadSessionFromEntries(entries);
-	}
-
-	loadEntries(): SessionEntry[] {
-		// Re-read from file to get latest state
-		if (existsSync(this.contextFile)) {
-			return this.loadEntriesFromFile();
-		}
-		return [...this.inMemoryEntries];
-	}
-
-	getSessionId(): string {
-		return this.sessionId;
-	}
-
-	getSessionFile(): string {
-		return this.contextFile;
-	}
-
-	/** Check if session should be initialized */
-	shouldInitializeSession(messages: AppMessage[]): boolean {
-		if (this.sessionInitialized) return false;
-		const userMessages = messages.filter((m) => m.role === "user");
-		const assistantMessages = messages.filter((m) => m.role === "assistant");
-		return userMessages.length >= 1 && assistantMessages.length >= 1;
-	}
-
-	/** Reset session (clears context.jsonl) */
-	reset(): void {
-		this.pendingEntries = [];
-		this.inMemoryEntries = [];
-		this.sessionInitialized = false;
-		this.sessionId = uuidv4();
-		// Truncate the context file
-		if (existsSync(this.contextFile)) {
-			writeFileSync(this.contextFile, "");
-		}
-	}
-
-	// Compatibility methods for AgentSession
-	isEnabled(): boolean {
-		return true;
-	}
-
-	setSessionFile(_path: string): void {
-		// No-op for mom - we always use the channel's context.jsonl
-	}
-
-	loadModel(): { provider: string; modelId: string } | null {
-		return this.loadSession().model;
-	}
-
-	loadThinkingLevel(): string {
-		return this.loadSession().thinkingLevel;
-	}
-
-	/** Not used by mom but required by AgentSession interface */
-	createBranchedSessionFromEntries(_entries: SessionEntry[], _branchBeforeIndex: number): string | null {
-		return null; // Mom doesn't support branching
-	}
-}
 
 // ============================================================================
 // MomSettingsManager - Simple settings for mom
@@ -329,6 +79,10 @@ export interface MomSettings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high";
+	steeringMode?: "all" | "one-at-a-time";
+	followUpMode?: "all" | "one-at-a-time";
+	theme?: string;
+	branchSummary?: { reserveTokens?: number };
 	compaction?: Partial<MomCompactionSettings>;
 	retry?: Partial<MomRetrySettings>;
 	usageSummary?: boolean | Partial<MomUsageSummarySettings>;
@@ -337,6 +91,7 @@ export interface MomSettings {
 	dmAllowlist?: string[];
 	showDetails?: boolean;
 	showToolResults?: boolean;
+	collapseDetailsOnComplete?: boolean;
 }
 
 const DEFAULT_COMPACTION: MomCompactionSettings = {
@@ -460,6 +215,39 @@ export class MomSettingsManager {
 		this.save();
 	}
 
+	getSteeringMode(): "all" | "one-at-a-time" {
+		return this.settings.steeringMode ?? "one-at-a-time";
+	}
+
+	setSteeringMode(mode: "all" | "one-at-a-time"): void {
+		this.settings.steeringMode = mode;
+		this.save();
+	}
+
+	getFollowUpMode(): "all" | "one-at-a-time" {
+		return this.settings.followUpMode ?? "one-at-a-time";
+	}
+
+	setFollowUpMode(mode: "all" | "one-at-a-time"): void {
+		this.settings.followUpMode = mode;
+		this.save();
+	}
+
+	getTheme(): string | undefined {
+		return this.settings.theme;
+	}
+
+	setTheme(theme: string): void {
+		this.settings.theme = theme;
+		this.save();
+	}
+
+	getBranchSummarySettings(): { reserveTokens: number } {
+		return {
+			reserveTokens: this.settings.branchSummary?.reserveTokens ?? 16384,
+		};
+	}
+
 	getProfileSettings(): BotProfileSettings {
 		return this.settings.profile ?? {};
 	}
@@ -497,6 +285,10 @@ export class MomSettingsManager {
 
 	get showToolResults(): boolean {
 		return this.settings.showToolResults ?? true;
+	}
+
+	get collapseDetailsOnComplete(): boolean {
+		return this.settings.collapseDetailsOnComplete ?? false;
 	}
 
 	setDiscordProfile(profile: Partial<DiscordProfileSettings>): void {
@@ -553,6 +345,12 @@ export function syncLogToContext(channelDir: string, options?: SyncLogToContextO
 
 	if (!existsSync(logFile)) return 0;
 
+	if (!existsSync(channelDir)) {
+		mkdirSync(channelDir, { recursive: true });
+	}
+
+	const sessionManager = SessionManager.open(contextFile, channelDir);
+
 	const timestampPrefixRegex = /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}\] /;
 
 	const normalizeUserContentForDedup = (content: string): string => {
@@ -567,46 +365,29 @@ export function syncLogToContext(channelDir: string, options?: SyncLogToContextO
 		return normalized;
 	};
 
-	// Track what is already in context:
-	// - `existingLogDates`: ISO timestamps of messages that were synced from log.jsonl (NOT live prompts)
-	// - `existingUserMessages`: normalized user message text (timestamp prefix stripped)
 	const existingLogDates = new Set<string>();
 	const existingUserMessages = new Set<string>();
 
-	if (existsSync(contextFile)) {
-		const contextContent = readFileSync(contextFile, "utf-8");
-		const contextLines = contextContent.trim().split("\n").filter(Boolean);
-		for (const line of contextLines) {
-			try {
-				const entry = JSON.parse(line) as {
-					type?: string;
-					timestamp?: string;
-					message?: { role?: string; content?: unknown };
-				};
-				if (entry.type !== "message") continue;
-				if (!entry.message || entry.message.role !== "user") continue;
+	for (const entry of sessionManager.getEntries()) {
+		if (entry.type !== "message") continue;
+		if (entry.message.role !== "user") continue;
 
-				const rawContent =
-					typeof entry.message.content === "string"
-						? entry.message.content
-						: Array.isArray(entry.message.content) && entry.message.content.length > 0
-							? (entry.message.content[0] as { text?: string }).text
-							: undefined;
+		const rawContent =
+			typeof entry.message.content === "string"
+				? entry.message.content
+				: Array.isArray(entry.message.content) && entry.message.content.length > 0
+					? (entry.message.content[0] as { text?: string }).text
+					: undefined;
 
-				if (typeof rawContent !== "string") continue;
+		if (typeof rawContent !== "string") continue;
 
-				const normalized = normalizeUserContentForDedup(rawContent);
-				if (normalized) {
-					existingUserMessages.add(normalized);
-				}
+		const normalized = normalizeUserContentForDedup(rawContent);
+		if (normalized) {
+			existingUserMessages.add(normalized);
+		}
 
-				// Only treat the entry timestamp as a log-sync date if this message doesn't have the live prompt prefix.
-				if (entry.timestamp && !timestampPrefixRegex.test(rawContent)) {
-					existingLogDates.add(entry.timestamp);
-				}
-			} catch {
-				// ignore malformed lines
-			}
+		if (entry.timestamp && !timestampPrefixRegex.test(rawContent)) {
+			existingLogDates.add(entry.timestamp);
 		}
 	}
 
@@ -618,7 +399,6 @@ export function syncLogToContext(channelDir: string, options?: SyncLogToContextO
 		return Boolean(options.excludeTs && ts === options.excludeTs);
 	};
 
-	// Read log.jsonl and append missing user messages to context.jsonl.
 	const logContent = readFileSync(logFile, "utf-8");
 	const logLines = logContent.trim().split("\n").filter(Boolean);
 
@@ -644,37 +424,33 @@ export function syncLogToContext(channelDir: string, options?: SyncLogToContextO
 		if (!entry.ts || !entry.date) continue;
 		if (shouldExcludeByTs(entry.ts)) continue;
 
-		// Skip if this log entry was already synced by date.
 		if (existingLogDates.has(entry.date)) continue;
 
 		const userName = entry.userName || entry.user || "unknown";
 		const text = entry.text || "";
 		const content = `[${userName}]: ${text}`;
 
-		// Skip if the same message already exists in context (e.g. was added via prompt()).
 		if (existingUserMessages.has(content)) continue;
 
 		const msgTime = new Date(entry.date).getTime();
 		const timestampMs = Number.isFinite(msgTime) ? msgTime : Date.now();
 
-		const newEntry: SessionMessageEntry = {
-			type: "message",
-			timestamp: entry.date,
-			message: {
-				role: "user",
-				content,
-				timestamp: timestampMs,
-			},
-		};
+		sessionManager.appendMessage({
+			role: "user",
+			content,
+			timestamp: timestampMs,
+		} satisfies Message);
 
-		if (!existsSync(channelDir)) {
-			mkdirSync(channelDir, { recursive: true });
-		}
-
-		appendFileSync(contextFile, JSON.stringify(newEntry) + "\n");
 		existingLogDates.add(entry.date);
 		existingUserMessages.add(content);
 		syncedCount++;
+	}
+
+	if (syncedCount > 0) {
+		const header = sessionManager.getHeader();
+		const entries = sessionManager.getEntries() as SessionEntry[];
+		const payload = header ? [header, ...entries] : entries;
+		writeFileSync(contextFile, `${payload.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
 	}
 
 	return syncedCount;

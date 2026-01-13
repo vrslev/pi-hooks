@@ -1,5 +1,5 @@
-import type { AgentTool, TextContent } from "@mariozechner/pi-ai";
-import { StringEnum } from "@mariozechner/pi-ai";
+import type { AgentTool } from "@mariozechner/pi-agent-core";
+import { StringEnum, type TextContent } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import type { DiscordProfileActivityType, DiscordProfileSettings, SlackProfileSettings } from "../context.js";
 import { MomSettingsManager } from "../context.js";

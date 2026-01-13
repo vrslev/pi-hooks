@@ -129,7 +129,7 @@ export function createSlackContext({
 					return;
 				}
 
-				const nextText = accumulatedText ? accumulatedText + "\n" + text : text;
+				const nextText = accumulatedText ? `${accumulatedText}\n${text}` : text;
 				const nextDisplayText = isWorking ? nextText + workingIndicator : nextText;
 
 				if (nextDisplayText.length <= primaryMaxChars) {

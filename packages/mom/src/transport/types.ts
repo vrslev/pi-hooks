@@ -21,7 +21,15 @@ export interface TransportFormatting {
 	codeBlock(text: string): string;
 }
 
+export interface ToolStartData {
+	toolCallId: string;
+	toolName: string;
+	label?: string;
+	args?: string;
+}
+
 export interface ToolResultData {
+	toolCallId: string;
 	toolName: string;
 	label?: string;
 	args?: string;
@@ -103,8 +111,13 @@ export interface TransportContext {
 	uploadFile(filePath: string, title?: string): Promise<void>;
 
 	// Optional transport-specific UX
+	startToolResult?: (data: ToolStartData) => Promise<void>;
 	sendToolResult?: (data: ToolResultData) => Promise<void>;
 	sendUsageSummary?: (data: UsageSummaryData, formatterOutput?: FormatterOutput) => Promise<void>;
 	addStopControl?: () => Promise<void>;
 	removeStopControl?: () => Promise<void>;
+
+	// Discord-specific: post buffered response after usage summary
+	postFinalResponse?: () => Promise<void>;
+	getBufferedResponse?: () => string;
 }
