@@ -804,6 +804,31 @@ async function runSingleAgent(
 			let unregisterActive: (() => void) | null = null;
 			let requestId = 0;
 			const pending = new Map<string, { resolve: (response: any) => void; reject: (error: Error) => void }>();
+			let stdinClosed = false;
+
+			const rejectPending = (error: Error) => {
+				for (const pendingReq of pending.values()) {
+					try {
+						pendingReq.reject(error);
+					} catch {
+						// ignore
+					}
+				}
+				pending.clear();
+			};
+
+			const markStdinClosed = (error: Error) => {
+				if (stdinClosed) return;
+				stdinClosed = true;
+				rejectPending(error);
+			};
+
+			proc.stdin?.on("error", (error) => {
+				markStdinClosed(error instanceof Error ? error : new Error("stdin error"));
+			});
+			proc.stdin?.on("close", () => {
+				markStdinClosed(new Error("stdin closed"));
+			});
 
 			const resolveOnce = (code: number) => {
 				if (resolved) return;
@@ -814,6 +839,10 @@ async function runSingleAgent(
 
 			const sendCommand = (command: any) =>
 				new Promise<any>((resolveCommand, rejectCommand) => {
+					if (stdinClosed || proc.exitCode !== null || proc.stdin?.destroyed) {
+						rejectCommand(new Error("RPC process is not available"));
+						return;
+					}
 					const id = `req_${++requestId}`;
 					const payload = { ...command, id };
 					const timeout = setTimeout(() => {
@@ -834,7 +863,14 @@ async function runSingleAgent(
 						},
 					});
 
-					proc.stdin?.write(`${JSON.stringify(payload)}\n`);
+					try {
+						proc.stdin?.write(`${JSON.stringify(payload)}\n`);
+					} catch (error: any) {
+						pending.delete(id);
+						const err = error instanceof Error ? error : new Error(String(error));
+						markStdinClosed(err);
+						rejectCommand(err);
+					}
 				});
 
 			const sendFollowUp = (message: string) => sendCommand({ type: "follow_up", message });
@@ -956,10 +992,12 @@ async function runSingleAgent(
 
 			proc.on("close", (code) => {
 				if (buffer.trim()) processLine(buffer);
+				markStdinClosed(new Error("process closed"));
 				resolveOnce(code ?? 0);
 			});
 
 			proc.on("error", () => {
+				markStdinClosed(new Error("process error"));
 				resolveOnce(1);
 			});
 
