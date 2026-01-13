@@ -1,6 +1,6 @@
 {
   "name": "permission",
-  "version": "0.37.2",
+  "version": "0.45.3",
   "description": "Layered permission control extension for pi-coding-agent",
   "type": "module",
   "scripts": {
