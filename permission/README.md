@@ -25,6 +25,8 @@ pi
 **Commands:**
 - `/permission` - Show selector to change level
 - `/permission medium` - Set level directly (asks session/global)
+- `/permission-mode` - Switch between ask/block when permission is required
+- `/permission-mode block` - Block instead of prompting
 
 **When a command needs higher permission:**
 ```
@@ -35,7 +37,11 @@ pi
   [Cancel]               → Don't execute
 ```
 
+If permission mode is set to block, commands that require higher permission are blocked without prompting. Use `/permission-mode ask` to restore prompts.
+
 ### Print Mode
+
+Permission mode is ignored in print mode; insufficient permissions always block.
 
 ```bash
 # Set level via environment variable
@@ -67,9 +73,12 @@ Global settings stored in `~/.pi/agent/settings.json`:
 
 ```json
 {
-  "permissionLevel": "medium"
+  "permissionLevel": "medium",
+  "permissionMode": "ask"
 }
 ```
+
+`permissionMode` accepts `ask` (prompt) or `block` (deny without prompting).
 
 ## Custom Configuration
 
@@ -78,6 +87,7 @@ Configure permission overrides and prefix mappings in `~/.pi/agent/settings.json
 ```json
 {
   "permissionLevel": "medium",
+  "permissionMode": "ask",
   "permissionConfig": {
     "overrides": {
       "minimal": ["tmux list-*", "tmux show-*"],

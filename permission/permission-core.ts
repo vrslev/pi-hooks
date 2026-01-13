@@ -18,7 +18,10 @@ import { parse } from "shell-quote";
 
 export type PermissionLevel = "minimal" | "low" | "medium" | "high" | "bypassed";
 
+export type PermissionMode = "ask" | "block";
+
 export const LEVELS: PermissionLevel[] = ["minimal", "low", "medium", "high", "bypassed"];
+export const PERMISSION_MODES: PermissionMode[] = ["ask", "block"];
 
 export const LEVEL_INDEX: Record<PermissionLevel, number> = {
   minimal: 0,
@@ -34,6 +37,11 @@ export const LEVEL_INFO: Record<PermissionLevel, { label: string; desc: string }
   medium: { label: "Medium", desc: "Dev operations" },
   high: { label: "High", desc: "Full operations" },
   bypassed: { label: "Bypassed", desc: "All checks disabled" },
+};
+
+export const PERMISSION_MODE_INFO: Record<PermissionMode, { label: string; desc: string }> = {
+  ask: { label: "Ask", desc: "Prompt when permission is required" },
+  block: { label: "Block", desc: "Block instead of prompting" },
 };
 
 export const LEVEL_ALLOWED_DESC: Record<PermissionLevel, string> = {
@@ -331,6 +339,21 @@ export function loadGlobalPermission(): PermissionLevel | null {
 export function saveGlobalPermission(level: PermissionLevel): void {
   const settings = loadSettings();
   settings.permissionLevel = level;
+  saveSettings(settings);
+}
+
+export function loadGlobalPermissionMode(): PermissionMode | null {
+  const settings = loadSettings();
+  const mode = (settings.permissionMode as string)?.toLowerCase();
+  if (mode && PERMISSION_MODES.includes(mode as PermissionMode)) {
+    return mode as PermissionMode;
+  }
+  return null;
+}
+
+export function saveGlobalPermissionMode(mode: PermissionMode): void {
+  const settings = loadSettings();
+  settings.permissionMode = mode;
   saveSettings(settings);
 }
 

@@ -5,6 +5,7 @@
  *
  * Interactive mode:
  *   Use `/permission` command to view or change the level.
+ *   Use `/permission-mode` to switch between ask vs block.
  *   When changing via command, you'll be asked: session-only or global?
  *
  * Print mode (pi -p):
@@ -39,12 +40,17 @@ import { exec } from "node:child_process";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
   type PermissionLevel,
+  type PermissionMode,
   LEVELS,
   LEVEL_INDEX,
   LEVEL_INFO,
   LEVEL_ALLOWED_DESC,
+  PERMISSION_MODES,
+  PERMISSION_MODE_INFO,
   loadGlobalPermission,
   saveGlobalPermission,
+  loadGlobalPermissionMode,
+  saveGlobalPermissionMode,
   classifyCommand,
   loadPermissionConfig,
   savePermissionConfig,
@@ -55,8 +61,11 @@ import {
 // Re-export types and constants needed by the hook
 export {
   type PermissionLevel,
+  type PermissionMode,
   LEVELS,
   LEVEL_INFO,
+  PERMISSION_MODES,
+  PERMISSION_MODE_INFO,
 };
 
 // ============================================================================
@@ -108,10 +117,17 @@ function getStatusText(level: PermissionLevel): string {
 export interface PermissionState {
   currentLevel: PermissionLevel;
   isSessionOnly: boolean;
+  permissionMode: PermissionMode;
+  isModeSessionOnly: boolean;
 }
 
 export function createInitialState(): PermissionState {
-  return { currentLevel: "minimal", isSessionOnly: false };
+  return {
+    currentLevel: "minimal",
+    isSessionOnly: false,
+    permissionMode: "ask",
+    isModeSessionOnly: false,
+  };
 }
 
 function setLevel(
@@ -127,6 +143,19 @@ function setLevel(
   }
   if (ctx.ui?.setStatus) {
     ctx.ui.setStatus("authority", getStatusText(level));
+  }
+}
+
+function setMode(
+  state: PermissionState,
+  mode: PermissionMode,
+  saveGlobally: boolean,
+  ctx: any
+): void {
+  state.permissionMode = mode;
+  state.isModeSessionOnly = !saveGlobally;
+  if (saveGlobally) {
+    saveGlobalPermissionMode(mode);
   }
 }
 
@@ -251,6 +280,63 @@ export async function handlePermissionCommand(
   ctx.ui.notify(`Permission: ${LEVEL_INFO[newLevel].label}${saveMsg}`, "info");
 }
 
+/** Handle /permission-mode command */
+export async function handlePermissionModeCommand(
+  state: PermissionState,
+  args: string,
+  ctx: any
+): Promise<void> {
+  const arg = args.trim().toLowerCase();
+
+  if (arg && PERMISSION_MODES.includes(arg as PermissionMode)) {
+    const newMode = arg as PermissionMode;
+
+    if (ctx.hasUI) {
+      const scope = await ctx.ui.select("Save permission mode to:", [
+        "Session only",
+        "Global (persists)",
+      ]);
+      if (!scope) return;
+
+      setMode(state, newMode, scope === "Global (persists)", ctx);
+      const saveMsg = scope === "Global (persists)" ? " (saved globally)" : " (session only)";
+      ctx.ui.notify(`Permission mode: ${PERMISSION_MODE_INFO[newMode].label}${saveMsg}`, "info");
+    } else {
+      setMode(state, newMode, false, ctx);
+      ctx.ui.notify(`Permission mode: ${PERMISSION_MODE_INFO[newMode].label}`, "info");
+    }
+    return;
+  }
+
+  if (!ctx.hasUI) {
+    ctx.ui.notify(
+      `Current permission mode: ${PERMISSION_MODE_INFO[state.permissionMode].label} (${PERMISSION_MODE_INFO[state.permissionMode].desc})`,
+      "info"
+    );
+    return;
+  }
+
+  const options = PERMISSION_MODES.map((mode) => {
+    const info = PERMISSION_MODE_INFO[mode];
+    const marker = mode === state.permissionMode ? " ← current" : "";
+    return `${info.label}: ${info.desc}${marker}`;
+  });
+
+  const choice = await ctx.ui.select("Select permission mode", options);
+  if (!choice) return;
+
+  const selectedLabel = choice.split(":")[0].trim();
+  const newMode = PERMISSION_MODES.find((m) => PERMISSION_MODE_INFO[m].label === selectedLabel);
+  if (!newMode || newMode === state.permissionMode) return;
+
+  const scope = await ctx.ui.select("Save to:", ["Session only", "Global (persists)"]);
+  if (!scope) return;
+
+  setMode(state, newMode, scope === "Global (persists)", ctx);
+  const saveMsg = scope === "Global (persists)" ? " (saved globally)" : " (session only)";
+  ctx.ui.notify(`Permission mode: ${PERMISSION_MODE_INFO[newMode].label}${saveMsg}`, "info");
+}
+
 /** Handle session_start - initialize level and show status */
 export function handleSessionStart(state: PermissionState, ctx: any): void {
   // Check env var first (for print mode)
@@ -265,6 +351,13 @@ export function handleSessionStart(state: PermissionState, ctx: any): void {
   }
 
   if (ctx.hasUI) {
+    const globalMode = loadGlobalPermissionMode();
+    if (globalMode) {
+      state.permissionMode = globalMode;
+    }
+  }
+
+  if (ctx.hasUI) {
     if (ctx.ui?.setStatus) {
       ctx.ui.setStatus("authority", getStatusText(state.currentLevel));
     }
@@ -272,6 +365,9 @@ export function handleSessionStart(state: PermissionState, ctx: any): void {
       ctx.ui.notify("⚠️ Permission bypassed - all checks disabled!", "warning");
     } else {
       ctx.ui.notify(`Permission: ${LEVEL_INFO[state.currentLevel].label} (use /permission to change)`, "info");
+    }
+    if (state.permissionMode === "block") {
+      ctx.ui.notify("Permission mode: Block (use /permission-mode to change)", "info");
     }
   }
 }
@@ -286,13 +382,21 @@ export async function handleBashToolCall(
 
   const classification = classifyCommand(command);
 
-  // Dangerous commands - always prompt
+  // Dangerous commands - always prompt unless in block mode
   if (classification.dangerous) {
     if (!ctx.hasUI) {
       return {
         block: true,
         reason: `Dangerous command requires confirmation: ${command}
 User can re-run with: PI_PERMISSION_LEVEL=bypassed pi -p "..."`
+      };
+    }
+
+    if (state.permissionMode === "block") {
+      return {
+        block: true,
+        reason: `Blocked by permission mode (block). Dangerous command: ${command}
+Use /permission-mode ask to enable confirmations.`
       };
     }
 
@@ -324,6 +428,15 @@ User can re-run with: PI_PERMISSION_LEVEL=bypassed pi -p "..."`
       reason: `Blocked by permission (${state.currentLevel}). Command: ${command}
 Allowed at this level: ${LEVEL_ALLOWED_DESC[state.currentLevel]}
 User can re-run with: PI_PERMISSION_LEVEL=${requiredLevel} pi -p "..."`
+    };
+  }
+
+  if (state.permissionMode === "block") {
+    return {
+      block: true,
+      reason: `Blocked by permission (${state.currentLevel}, mode: block). Command: ${command}
+Requires ${requiredInfo.label}. Allowed at this level: ${LEVEL_ALLOWED_DESC[state.currentLevel]}
+Use /permission ${requiredLevel} or /permission-mode ask to enable prompts.`
     };
   }
 
@@ -376,6 +489,15 @@ User can re-run with: PI_PERMISSION_LEVEL=low pi -p "..."`
     };
   }
 
+  if (state.permissionMode === "block") {
+    return {
+      block: true,
+      reason: `Blocked by permission (${state.currentLevel}, mode: block). ${action}: ${filePath}
+Requires Low. Allowed at this level: ${LEVEL_ALLOWED_DESC[state.currentLevel]}
+Use /permission low or /permission-mode ask to enable prompts.`
+    };
+  }
+
   // Interactive mode: prompt
   playPermissionSound();
   const choice = await ctx.ui.select(
@@ -404,6 +526,11 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("permission", {
     description: "View or change permission level",
     handler: (args, ctx) => handlePermissionCommand(state, args, ctx),
+  });
+
+  pi.registerCommand("permission-mode", {
+    description: "Set permission prompt mode (ask or block)",
+    handler: (args, ctx) => handlePermissionModeCommand(state, args, ctx),
   });
 
   pi.on("session_start", async (_event, ctx) => {
