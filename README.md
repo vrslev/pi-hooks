@@ -88,6 +88,8 @@ Looped subagent execution via the `ralph_loop` tool.
 - Can supply max iterations and minimum delay between each
 - Optionally supply model and thinking
 - Supports `conditionCommand`, `maxIterations`, and `sleepMs` controls
+- Interactive steering + pause/resume/stop commands in UI mode
+- Exported HTML includes a loop log
 - Defaults to the `worker` agent and the last user prompt when omitted
 - No npm install required
 

@@ -1,3 +1,5 @@
+/// <reference path="./types.d.ts" />
+
 /**
  * Ralph Loop Tool - Run subagent tasks in a loop.
  *
@@ -11,15 +13,22 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import type { Message } from "@mariozechner/pi-ai";
+import type { ImageContent, Message, TextContent } from "@mariozechner/pi-ai";
 import { StringEnum } from "@mariozechner/pi-ai";
-import { type ExtensionAPI, getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
-import { Type, type Static } from "@sinclair/typebox";
+import {
+	type ExtensionAPI,
+	AssistantMessageComponent,
+	DynamicBorder,
+	ToolExecutionComponent,
+	UserMessageComponent,
+} from "@mariozechner/pi-coding-agent";
+import { Box, Container, Spacer, Text, matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
+import { Type } from "@sinclair/typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.js";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
+const COLLAPSED_LINE_LIMIT = 30;
 
 /**
  * Look up the provider for a model using `pi --list-models`.
@@ -186,6 +195,8 @@ interface LoopPromptInfo {
 	items: LoopPromptItem[];
 }
 
+type LoopRunStatus = "idle" | "running" | "paused" | "stopping";
+
 interface RalphLoopDetails {
 	iterations: LoopIterationResult[];
 	stopReason: string;
@@ -195,7 +206,27 @@ interface RalphLoopDetails {
 	sleepMs: number;
 	lastCondition: { stdout: string; stderr: string; exitCode: number };
 	prompt: LoopPromptInfo;
+	steering: string[];
+	status: LoopRunStatus;
 }
+
+interface LoopControlState {
+	status: LoopRunStatus;
+	runId: string | null;
+	iterations: number;
+	steering: string[];
+	steeringOnce: string[];
+	paused: boolean;
+	abortController: AbortController | null;
+	lastDetails: RalphLoopDetails | null;
+}
+
+interface ActiveRun {
+	process: any;
+	sendFollowUp: (message: string) => Promise<void>;
+}
+
+type ActiveRunRegistration = (run: ActiveRun) => () => void;
 
 function getFinalOutput(messages: Message[]): string {
 	for (let i = messages.length - 1; i >= 0; i--) {
@@ -209,7 +240,10 @@ function getFinalOutput(messages: Message[]): string {
 	return "";
 }
 
-type DisplayItem = { type: "text"; text: string } | { type: "toolCall"; name: string; args: Record<string, any> };
+type DisplayItem =
+	| { type: "text"; text: string }
+	| { type: "toolCall"; name: string; args: Record<string, any> }
+	| { type: "toolResult"; name: string; content: (TextContent | ImageContent)[]; isError: boolean };
 
 function getDisplayItems(messages: Message[]): DisplayItem[] {
 	const items: DisplayItem[] = [];
@@ -219,9 +253,314 @@ function getDisplayItems(messages: Message[]): DisplayItem[] {
 				if (part.type === "text") items.push({ type: "text", text: part.text });
 				else if (part.type === "toolCall") items.push({ type: "toolCall", name: part.name, args: part.arguments });
 			}
+		} else if (msg.role === "toolResult") {
+			items.push({ type: "toolResult", name: msg.toolName, content: msg.content, isError: msg.isError });
 		}
 	}
 	return items;
+}
+
+const BUILTIN_TOOL_NAMES = new Set(["bash", "read", "write", "edit", "ls", "find", "grep"]);
+
+type LoopViewerEntry =
+	| { type: "section"; text: string }
+	| { type: "meta"; text: string }
+	| { type: "note"; text: string }
+	| { type: "user"; text: string }
+	| { type: "assistant"; message: Message }
+	| {
+			type: "toolExecution";
+			toolName: string;
+			args: Record<string, any>;
+			result: { content: (TextContent | ImageContent)[]; details?: any; isError: boolean };
+		};
+
+function buildEntryComponent(entry: LoopViewerEntry, theme: any, ui: any, cwd: string) {
+	switch (entry.type) {
+		case "section":
+			return new Text(theme.fg("accent", entry.text), 1, 0);
+		case "meta":
+			return new Text(theme.fg("dim", entry.text), 1, 0);
+		case "note":
+			return new Text(theme.fg("muted", entry.text), 1, 0);
+		case "user":
+			return new UserMessageComponent(entry.text);
+		case "assistant":
+			return new AssistantMessageComponent(entry.message as any, true);
+		case "toolExecution": {
+			const isBuiltin = BUILTIN_TOOL_NAMES.has(entry.toolName);
+			if (isBuiltin) {
+				const toolComp = new ToolExecutionComponent(
+					entry.toolName,
+					entry.args,
+					{ showImages: false },
+					undefined,
+					ui,
+					cwd,
+				);
+				toolComp.updateResult(entry.result, false);
+				return toolComp;
+			}
+			const argsText = JSON.stringify(entry.args ?? {}, null, 2);
+			const output = extractTextFromContent(entry.result.content).trim();
+			const container = new Container();
+			const header = theme.fg("accent", entry.toolName);
+			const argsLine = argsText && argsText !== "{}" ? theme.fg("dim", ` ${argsText}`) : "";
+			container.addChild(new Text(header + argsLine, 1, 0));
+			if (output) {
+				const color = entry.result.isError ? "error" : "toolOutput";
+				container.addChild(new Text(theme.fg(color, output), 1, 0));
+			}
+			return container;
+		}
+	}
+}
+
+function renderLoopEntries(entries: LoopViewerEntry[], theme: any, tui: any, cwd: string) {
+	const container = new Container();
+	const toolUi = tui ?? { requestRender: () => {} };
+	for (const entry of entries) {
+		const component = buildEntryComponent(entry, theme, toolUi, cwd);
+		if (component) {
+			container.addChild(component);
+			container.addChild(new Spacer(1));
+		}
+	}
+	return container;
+}
+
+function formatLoopEntriesText(loopDetails: RalphLoopDetails): string {
+	const entries = buildLoopEntries(loopDetails);
+	const themePlain = (_color: any, text: string) => text;
+	const lines: string[] = [];
+
+	for (const entry of entries) {
+		switch (entry.type) {
+			case "section":
+				lines.push("", entry.text);
+				break;
+			case "meta":
+			case "note":
+				lines.push(entry.text);
+				break;
+			case "user":
+				lines.push(`User: ${entry.text}`);
+				break;
+			case "assistant": {
+				const text = extractTextFromContent(entry.message.content).trim();
+				if (text) lines.push(`Assistant: ${text}`);
+				break;
+			}
+			case "toolExecution": {
+				const toolLine = formatToolCall(entry.toolName, entry.args, themePlain);
+				lines.push(`Tool: ${toolLine}`);
+				const output = extractTextFromContent(entry.result.content).trim();
+				if (output) {
+					lines.push(output);
+				} else {
+					lines.push("(no output)");
+				}
+				break;
+			}
+		}
+	}
+
+	return lines.join("\n").trim();
+}
+
+function truncateComponentLines(component: any, maxLines: number, theme: any) {
+	return {
+		render: (width: number) => {
+			const lines = component.render(width);
+			if (lines.length <= maxLines) return lines;
+			const remaining = lines.length - maxLines;
+			const notice = theme.fg("muted", `... (${remaining} earlier lines, Ctrl+O to expand)`);
+			const truncated = lines.slice(Math.max(0, lines.length - maxLines));
+			return [truncateToWidth(notice, width), ...truncated];
+		},
+		invalidate: () => {
+			component.invalidate?.();
+		},
+	};
+}
+
+function buildLoopEntries(loopDetails: RalphLoopDetails): LoopViewerEntry[] {
+	const entries: LoopViewerEntry[] = [];
+	entries.push({ type: "meta", text: `Status: ${loopDetails.status}` });
+	entries.push({ type: "meta", text: `Stop: ${loopDetails.stopReason}` });
+	entries.push({ type: "meta", text: `Condition: ${loopDetails.conditionCommand} (${loopDetails.conditionSource})` });
+	entries.push({ type: "meta", text: `Iterations: ${loopDetails.iterations.length}` });
+	if (loopDetails.steering.length > 0) {
+		entries.push({ type: "meta", text: `Steering: ${loopDetails.steering.join(" | ")}` });
+	}
+
+	if (loopDetails.iterations.length === 0) {
+		entries.push({ type: "note", text: "(no iterations yet)" });
+		return entries;
+	}
+
+	for (const iteration of loopDetails.iterations) {
+		entries.push({ type: "section", text: `Iteration ${iteration.index} (${iteration.details.mode})` });
+
+		for (const result of iteration.details.results) {
+			const statusIcon = result.exitCode === 0 ? "✓" : "✗";
+			const agentLine = `${statusIcon} ${result.agent} (${result.agentSource})`;
+			entries.push({ type: "note", text: agentLine });
+			if (result.task) entries.push({ type: "note", text: `Task: ${result.task}` });
+			if (result.errorMessage) entries.push({ type: "note", text: `Error: ${result.errorMessage}` });
+
+			const toolCalls = new Map<string, { name: string; args: Record<string, any> }>();
+			for (const msg of result.messages) {
+				if (msg.role === "assistant") {
+					for (const part of msg.content) {
+						if (part.type === "toolCall") {
+							toolCalls.set(part.id, { name: part.name, args: part.arguments });
+						}
+					}
+					entries.push({ type: "assistant", message: msg });
+				} else if (msg.role === "user") {
+					const text = extractTextFromContent(msg.content).trim();
+					entries.push({ type: "user", text: text || "(user message)" });
+				} else if (msg.role === "toolResult") {
+					const toolCall = toolCalls.get(msg.toolCallId);
+					entries.push({
+						type: "toolExecution",
+						toolName: msg.toolName,
+						args: toolCall?.args ?? {},
+						result: {
+							content: msg.content,
+							details: msg.details,
+							isError: msg.isError,
+						},
+					});
+				}
+			}
+
+			if (result.messages.length === 0) {
+				entries.push({ type: "note", text: "(no messages)" });
+			}
+		}
+	}
+
+	return entries;
+}
+
+function formatTaskPreview(task: string, maxLength: number): string {
+	const singleLine = task.replace(/\s+/g, " ").trim();
+	if (singleLine.length <= maxLength) return singleLine;
+	return `${singleLine.slice(0, maxLength)}...`;
+}
+
+function formatSteeringText(messages: string[]): string | null {
+	const cleaned = messages.map((msg) => msg.trim()).filter(Boolean);
+	if (cleaned.length === 0) return null;
+	const lines = cleaned.map((msg, index) => `${index + 1}. ${msg}`);
+	return `Steering updates:\n${lines.join("\n")}`;
+}
+
+function appendSteeringToTask(task: string, steering: string | null): string {
+	if (!steering) return task;
+	return `${task.trim()}\n\n${steering}`;
+}
+
+function cloneLoopParams(params: any): any {
+	return {
+		...params,
+		tasks: Array.isArray(params.tasks) ? params.tasks.map((task: any) => ({ ...task })) : undefined,
+		chain: Array.isArray(params.chain) ? params.chain.map((step: any) => ({ ...step })) : undefined,
+	};
+}
+
+function applySteeringToParams(params: any, steering: string | null): any {
+	const nextParams = cloneLoopParams(params);
+	if (!steering) return nextParams;
+	if (typeof nextParams.task === "string") {
+		nextParams.task = appendSteeringToTask(nextParams.task, steering);
+	}
+	if (Array.isArray(nextParams.tasks)) {
+		nextParams.tasks = nextParams.tasks.map((task: any) => ({
+			...task,
+			task: appendSteeringToTask(task.task, steering),
+		}));
+	}
+	if (Array.isArray(nextParams.chain)) {
+		nextParams.chain = nextParams.chain.map((step: any) => ({
+			...step,
+			task: appendSteeringToTask(step.task, steering),
+		}));
+	}
+	return nextParams;
+}
+
+function mergeAbortSignals(primary?: AbortSignal, secondary?: AbortSignal): AbortSignal | undefined {
+	if (!primary) return secondary;
+	if (!secondary) return primary;
+	const controller = new AbortController();
+	const abort = () => controller.abort();
+	if (primary.aborted || secondary.aborted) {
+		controller.abort();
+	} else {
+		primary.addEventListener("abort", abort, { once: true });
+		secondary.addEventListener("abort", abort, { once: true });
+	}
+	return controller.signal;
+}
+
+function isProcessActive(proc: any): boolean {
+	return Boolean(proc && proc.exitCode === null);
+}
+
+function pauseActiveRuns(control: LoopControlState, runs: Set<ActiveRun>): boolean {
+	if (control.paused) return runs.size > 0;
+	let paused = false;
+	for (const run of runs) {
+		try {
+			if (isProcessActive(run.process)) {
+				const didStop = run.process.kill("SIGSTOP");
+				if (didStop) paused = true;
+			}
+		} catch {
+			// ignore
+		}
+	}
+	if (paused) {
+		control.paused = true;
+		if (control.status !== "stopping") {
+			control.status = "paused";
+		}
+	}
+	return paused;
+}
+
+function clearPausedState(control: LoopControlState): void {
+	if (!control.paused) return;
+	control.paused = false;
+	if (control.status === "paused") {
+		control.status = "running";
+	}
+}
+
+function resumeActiveRuns(control: LoopControlState, runs: Set<ActiveRun>): boolean {
+	if (!control.paused) return runs.size > 0;
+	if (runs.size === 0) {
+		clearPausedState(control);
+		return true;
+	}
+	let resumed = false;
+	for (const run of runs) {
+		try {
+			if (isProcessActive(run.process)) {
+				const didResume = run.process.kill("SIGCONT");
+				if (didResume) resumed = true;
+			}
+		} catch {
+			// ignore
+		}
+	}
+	if (resumed) {
+		clearPausedState(control);
+	}
+	return resumed;
 }
 
 async function mapWithConcurrencyLimit<TIn, TOut>(
@@ -252,7 +591,7 @@ function writePromptToTempFile(agentName: string, prompt: string): { dir: string
 	return { dir: tmpDir, filePath };
 }
 
-type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
+type OnUpdateCallback = (partial: AgentToolResult) => void;
 
 async function runSingleAgent(
 	defaultCwd: string,
@@ -267,6 +606,7 @@ async function runSingleAgent(
 	modelOverride?: string,
 	thinkingLevel?: string,
 	taskIndex?: number,
+	registerActiveRun?: ActiveRunRegistration,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -299,8 +639,8 @@ async function runSingleAgent(
 	const stepSuffix = step !== undefined ? `_step${step}` : "";
 	const sessionFile = path.join(subagentSessionDir, `${timestamp}_${safeName}${stepSuffix}${indexSuffix}_${uuid}.jsonl`);
 
-	const args: string[] = ["--mode", "json", "-p", "--session", sessionFile];
-	
+	const args: string[] = ["--mode", "rpc", "--session", sessionFile];
+
 	// Parse provider:model format and pass both --provider and --model flags
 	// This is needed because pi's --model flag alone doesn't override defaultProvider from settings.json
 	if (effectiveModel) {
@@ -372,25 +712,91 @@ async function runSingleAgent(
 			args.push("--append-system-prompt", tmpPromptPath);
 		}
 
-		args.push(`Task: ${task}`);
 		let wasAborted = false;
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const env = agent.permissionLevel
 				? { ...process.env, PI_PERMISSION_LEVEL: agent.permissionLevel }
 				: process.env;
-			const proc = spawn("pi", args, { cwd: cwd ?? defaultCwd, shell: false, stdio: ["ignore", "pipe", "pipe"], env });
+			const proc = spawn("pi", args, { cwd: cwd ?? defaultCwd, shell: false, stdio: ["pipe", "pipe", "pipe"], env });
 			let buffer = "";
+			let resolved = false;
+			let unregisterActive: (() => void) | null = null;
+			let requestId = 0;
+			const pending = new Map<string, { resolve: (response: any) => void; reject: (error: Error) => void }>();
 
-			const processLine = (line: string) => {
-				if (!line.trim()) return;
-				let event: any;
-				try {
-					event = JSON.parse(line);
-				} catch {
-					return;
+			const resolveOnce = (code: number) => {
+				if (resolved) return;
+				resolved = true;
+				if (unregisterActive) unregisterActive();
+				resolve(code);
+			};
+
+			const sendCommand = (command: any) =>
+				new Promise<any>((resolveCommand, rejectCommand) => {
+					const id = `req_${++requestId}`;
+					const payload = { ...command, id };
+					const timeout = setTimeout(() => {
+						if (pending.has(id)) {
+							pending.delete(id);
+							rejectCommand(new Error(`Timeout waiting for ${command.type}`));
+						}
+					}, 30000);
+
+					pending.set(id, {
+						resolve: (response) => {
+							clearTimeout(timeout);
+							resolveCommand(response);
+						},
+						reject: (error) => {
+							clearTimeout(timeout);
+							rejectCommand(error);
+						},
+					});
+
+					proc.stdin?.write(`${JSON.stringify(payload)}\n`);
+				});
+
+			const sendFollowUp = (message: string) => sendCommand({ type: "follow_up", message });
+			unregisterActive = registerActiveRun ? registerActiveRun({ process: proc, sendFollowUp }) : null;
+
+			const handleResponse = (event: any) => {
+				const id = event?.id as string | undefined;
+				if (!id) return false;
+				const pendingReq = pending.get(id);
+				if (!pendingReq) return false;
+				pending.delete(id);
+				if (event.success === false) {
+					pendingReq.reject(new Error(event.error || "RPC command failed"));
+				} else {
+					pendingReq.resolve(event);
 				}
+				return true;
+			};
 
+			let finalizing = false;
+			const finalizeRun = async () => {
+				if (resolved || finalizing) return;
+				finalizing = true;
+				try {
+					const response = await sendCommand({ type: "get_state" });
+					const state = response?.data;
+					if (state?.pendingMessageCount > 0 || state?.isStreaming) {
+						finalizing = false;
+						return;
+					}
+				} catch {
+					// ignore
+				}
+				if (resolved) return;
+				resolveOnce(0);
+				proc.kill("SIGTERM");
+				setTimeout(() => {
+					if (!proc.killed) proc.kill("SIGKILL");
+				}, 2000);
+			};
+
+			const processEvent = (event: any) => {
 				if (event.type === "message_end" && event.message) {
 					const msg = event.message as Message;
 					currentResult.messages.push(msg);
@@ -411,12 +817,47 @@ async function runSingleAgent(
 						if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
 					}
 					emitUpdate();
+					return;
 				}
 
-				if (event.type === "tool_result_end" && event.message) {
-					currentResult.messages.push(event.message as Message);
+				if (event.type === "tool_execution_end" && event.toolCallId) {
+					const toolMessage = {
+						role: "toolResult",
+						toolCallId: event.toolCallId,
+						toolName: event.toolName || "",
+						content: event.result?.content || [],
+						details: event.result?.details,
+						isError: Boolean(event.isError),
+						timestamp: Date.now(),
+					};
+					currentResult.messages.push(toolMessage as Message);
 					emitUpdate();
+					return;
 				}
+
+				if (event.type === "agent_end") {
+					if (Array.isArray(event.messages)) {
+						currentResult.messages = event.messages as Message[];
+					}
+					emitUpdate();
+					void finalizeRun();
+				}
+			};
+
+			const processLine = (line: string) => {
+				if (!line.trim()) return;
+				let event: any;
+				try {
+					event = JSON.parse(line);
+				} catch {
+					return;
+				}
+
+				if (event.type === "response" && handleResponse(event)) {
+					return;
+				}
+
+				processEvent(event);
 			};
 
 			proc.stdout.on("data", (data) => {
@@ -432,24 +873,31 @@ async function runSingleAgent(
 
 			proc.on("close", (code) => {
 				if (buffer.trim()) processLine(buffer);
-				resolve(code ?? 0);
+				resolveOnce(code ?? 0);
 			});
 
 			proc.on("error", () => {
-				resolve(1);
+				resolveOnce(1);
 			});
 
 			if (signal) {
-				const killProc = () => {
+				const abortRpc = () => {
 					wasAborted = true;
+					sendCommand({ type: "abort" }).catch(() => undefined);
 					proc.kill("SIGTERM");
 					setTimeout(() => {
 						if (!proc.killed) proc.kill("SIGKILL");
 					}, 5000);
 				};
-				if (signal.aborted) killProc();
-				else signal.addEventListener("abort", killProc, { once: true });
+				if (signal.aborted) abortRpc();
+				else signal.addEventListener("abort", abortRpc, { once: true });
 			}
+
+			sendCommand({ type: "prompt", message: `Task: ${task}` }).catch((error) => {
+				currentResult.stderr += error?.message ? `\n${error.message}` : String(error);
+				resolveOnce(1);
+				proc.kill("SIGTERM");
+			});
 		});
 
 		currentResult.exitCode = exitCode;
@@ -546,6 +994,7 @@ async function executeSubagentOnce(
 	ctx: any,
 	signal?: AbortSignal,
 	onUpdate?: OnUpdateCallback,
+	registerActiveRun?: ActiveRunRegistration,
 ): Promise<LoopExecutionResult> {
 	const agentScope: AgentScope = params.agentScope ?? "user";
 	const discovery = discoverAgents(ctx.cwd, agentScope);
@@ -635,6 +1084,7 @@ async function executeSubagentOnce(
 				step.model,
 				step.thinking ?? params.thinking,
 				undefined,
+				registerActiveRun,
 			);
 			results.push(result);
 
@@ -715,7 +1165,7 @@ async function executeSubagentOnce(
 		const results = await mapWithConcurrencyLimit(
 			params.tasks,
 			MAX_CONCURRENCY,
-			async (t: Static<typeof TaskItem>, index: number) => {
+			async (t: any, index: number) => {
 				const result = await runSingleAgent(
 					ctx.cwd,
 					agents,
@@ -736,6 +1186,7 @@ async function executeSubagentOnce(
 					t.model,
 					t.thinking ?? params.thinking,
 					index,
+					registerActiveRun,
 				);
 				if (allResults) {
 					allResults[index] = result;
@@ -774,6 +1225,7 @@ async function executeSubagentOnce(
 			params.model,
 			params.thinking,
 			undefined,
+			registerActiveRun,
 		);
 		const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 		if (isError) {
@@ -957,6 +1409,309 @@ function formatLoopPromptItem(item: LoopPromptItem, maxTaskLength: number): stri
 }
 
 export default function (pi: ExtensionAPI) {
+	const loopControl: LoopControlState = {
+		status: "idle",
+		runId: null,
+		iterations: 0,
+		steering: [],
+		steeringOnce: [],
+		paused: false,
+		abortController: null,
+		lastDetails: null,
+	};
+
+	const activeRuns = new Set<ActiveRun>();
+	const registerActiveRun: ActiveRunRegistration = (run) => {
+		activeRuns.add(run);
+		return () => activeRuns.delete(run);
+	};
+
+	const sendFollowUpToActive = async (message: string) => {
+		const runs = Array.from(activeRuns);
+		if (runs.length === 0) return false;
+		let delivered = false;
+		await Promise.all(
+			runs.map(async (run) => {
+				try {
+					await run.sendFollowUp(message);
+					delivered = true;
+				} catch {
+					// ignore
+				}
+			}),
+		);
+		return delivered;
+	};
+
+	const getLoopStatusLine = () => {
+		if (loopControl.status === "idle") return undefined;
+		const details = loopControl.lastDetails;
+		const iterations = details?.iterations.length ?? loopControl.iterations;
+		const maxIterations = details?.maxIterations;
+		const maxLabel =
+			typeof maxIterations === "number" && maxIterations !== Number.MAX_SAFE_INTEGER ? `/${maxIterations}` : "";
+		return `ralph-loop ${loopControl.status}: ${iterations}${maxLabel}`;
+	};
+
+	const ensureActiveLoop = (ctx: any) => {
+		if (loopControl.status === "idle") {
+			ctx.ui.notify("No active ralph_loop run.", "warning");
+			return false;
+		}
+		return true;
+	};
+
+	pi.registerCommand("ralph-steer", {
+		description: "Queue a steering message for the active ralph_loop run",
+		handler: async (args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("Interactive mode required.", "error");
+				return;
+			}
+			if (!ensureActiveLoop(ctx)) return;
+
+			let message = args.trim();
+			let once = false;
+			if (message.startsWith("--once ")) {
+				once = true;
+				message = message.slice("--once ".length).trim();
+			}
+			if (!message) {
+				const input = await ctx.ui.input("Steer ralph_loop:", "Add guidance for next iterations");
+				if (!input) return;
+				message = input.trim();
+			}
+			if (!message) return;
+
+			const sentToActive = await sendFollowUpToActive(message);
+			if (!sentToActive) {
+				if (once) {
+					loopControl.steeringOnce.push(message);
+				} else {
+					loopControl.steering.push(message);
+				}
+			}
+
+			if (sentToActive) {
+				ctx.ui.notify("Queued for current iteration.", "info");
+			} else {
+				ctx.ui.notify(once ? "One-off steering queued for next iteration." : "Steering queued for next iteration.", "info");
+			}
+			ctx.ui.setStatus("ralph-loop", getLoopStatusLine());
+		},
+	});
+
+	pi.registerCommand("ralph-clear", {
+		description: "Clear queued steering for ralph_loop",
+		handler: async (_args, ctx) => {
+			loopControl.steering = [];
+			loopControl.steeringOnce = [];
+			ctx.ui.notify("Cleared steering queue.", "info");
+			ctx.ui.setStatus("ralph-loop", getLoopStatusLine());
+		},
+	});
+
+	pi.registerCommand("ralph-pause", {
+		description: "Pause the currently running ralph_loop iteration",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("Interactive mode required.", "error");
+				return;
+			}
+			if (!ensureActiveLoop(ctx)) return;
+			if (loopControl.paused) {
+				ctx.ui.notify("ralph_loop is already paused.", "info");
+				return;
+			}
+			const paused = pauseActiveRuns(loopControl, activeRuns);
+			if (!paused) {
+				ctx.ui.notify("No running iteration to pause.", "warning");
+				return;
+			}
+			ctx.ui.notify("Paused current iteration.", "info");
+			ctx.ui.setStatus("ralph-loop", getLoopStatusLine());
+		},
+	});
+
+	pi.registerCommand("ralph-resume", {
+		description: "Resume a paused ralph_loop",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("Interactive mode required.", "error");
+				return;
+			}
+			if (!ensureActiveLoop(ctx)) return;
+			if (!loopControl.paused) {
+				ctx.ui.notify("ralph_loop is not paused.", "info");
+				return;
+			}
+			const hadRuns = activeRuns.size > 0;
+			const resumed = resumeActiveRuns(loopControl, activeRuns);
+			if (!resumed) {
+				ctx.ui.notify("No paused iteration to resume.", "warning");
+				return;
+			}
+			ctx.ui.notify(hadRuns ? "Resumed current iteration." : "Cleared paused state.", "info");
+			ctx.ui.setStatus("ralph-loop", getLoopStatusLine());
+		},
+	});
+
+	pi.registerCommand("ralph-stop", {
+		description: "Stop the active ralph_loop run",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("Interactive mode required.", "error");
+				return;
+			}
+			if (!ensureActiveLoop(ctx)) return;
+			loopControl.status = "stopping";
+			loopControl.abortController?.abort();
+			resumeActiveRuns(loopControl, activeRuns);
+			ctx.ui.notify("Stop requested for ralph_loop.", "warning");
+			ctx.ui.setStatus("ralph-loop", getLoopStatusLine());
+		},
+	});
+
+	pi.registerCommand("ralph-status", {
+		description: "Show ralph_loop status",
+		handler: async (_args, ctx) => {
+			const details = loopControl.lastDetails;
+			if (loopControl.status === "idle" && !details) {
+				ctx.ui.notify("No ralph_loop activity yet.", "info");
+				return;
+			}
+			const iterations = details?.iterations.length ?? loopControl.iterations;
+			const maxIterations = details?.maxIterations;
+			const maxLabel =
+				typeof maxIterations === "number" && maxIterations !== Number.MAX_SAFE_INTEGER ? `/${maxIterations}` : "";
+			const steeringCount = loopControl.steering.length + loopControl.steeringOnce.length;
+			const parts = [`Status: ${loopControl.status}`];
+			if (loopControl.runId) parts.push(`Run: ${loopControl.runId}`);
+			parts.push(`Iterations: ${iterations}${maxLabel}`);
+			if (loopControl.status === "idle" && details?.stopReason) parts.push(`Last stop: ${details.stopReason}`);
+			if (steeringCount > 0) parts.push(`Steering queued: ${steeringCount}`);
+			ctx.ui.notify(parts.join(" | "), "info");
+		},
+	});
+
+	pi.registerCommand("ralph-view", {
+		description: "View the latest ralph_loop run in a rich UI",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("Interactive mode required.", "error");
+				return;
+			}
+
+			const resolveDetails = (): RalphLoopDetails | null => {
+				if (loopControl.lastDetails) return loopControl.lastDetails;
+				const branchEntries = ctx.sessionManager.getBranch?.() ?? ctx.sessionManager.getEntries?.() ?? [];
+				for (let i = branchEntries.length - 1; i >= 0; i--) {
+					const entry = branchEntries[i];
+					if (entry.type !== "message") continue;
+					const msg: any = entry.message;
+					if (msg?.role === "toolResult" && msg.toolName === "ralph_loop" && msg.details) {
+						return msg.details as RalphLoopDetails;
+					}
+				}
+				return null;
+			};
+
+			const details = resolveDetails();
+			if (!details) {
+				ctx.ui.notify("No ralph_loop run found in this session.", "warning");
+				return;
+			}
+
+			const entries = buildLoopEntries(details);
+
+			await ctx.ui.custom((tui, theme, _keybindings, done) => {
+				const wrapper = new Container();
+				wrapper.addChild(new Spacer(1));
+
+				const mainBox = new Box(1, 0, (text: string) => theme.bg("toolPendingBg", text));
+				const container = new Container();
+
+				container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+				container.addChild(new Spacer(1));
+				container.addChild(
+					new Text(
+						theme.fg("accent", theme.bold(" 🌀 Ralph Loop Viewer")) +
+							theme.fg("dim", ` (${entries.length} entries)`),
+						1,
+						0,
+					),
+				);
+				container.addChild(
+					new Text(theme.fg("dim", " ↑↓/jk scroll • g/G top/bottom • q close"), 1, 0),
+				);
+				container.addChild(new Spacer(1));
+				container.addChild(new DynamicBorder((s: string) => theme.fg("muted", s)));
+
+				const contentContainer = new Container();
+				const footerContainer = new Container();
+				container.addChild(contentContainer);
+				container.addChild(footerContainer);
+
+				mainBox.addChild(container);
+				wrapper.addChild(mainBox);
+				wrapper.addChild(new Spacer(1));
+
+				let scrollOffset = 0;
+				const maxVisible = 10;
+
+				const rebuild = () => {
+					contentContainer.children.length = 0;
+					footerContainer.children.length = 0;
+					contentContainer.addChild(new Spacer(1));
+
+					const visibleEntries = entries.slice(scrollOffset, scrollOffset + maxVisible);
+
+					const renderedEntries = renderLoopEntries(visibleEntries, theme, tui, ctx.cwd);
+					contentContainer.addChild(renderedEntries);
+
+					const start = entries.length === 0 ? 0 : scrollOffset + 1;
+					const end = Math.min(scrollOffset + maxVisible, entries.length);
+					const scrollInfo =
+						entries.length > maxVisible
+							? `  Showing ${start}-${end} of ${entries.length}`
+							: `  ${entries.length} entries`;
+					footerContainer.addChild(new DynamicBorder((s: string) => theme.fg("muted", s)));
+					footerContainer.addChild(new Text(theme.fg("dim", scrollInfo), 0, 0));
+					footerContainer.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+				};
+
+				rebuild();
+
+				return {
+					render: (width: number) => wrapper.render(width),
+					invalidate: () => wrapper.invalidate(),
+					handleInput: (data: string) => {
+						if (matchesKey(data, "escape") || data === "q" || data === "Q") {
+							done();
+						} else if (matchesKey(data, "up") || data === "k" || data === "K") {
+							scrollOffset = Math.max(0, scrollOffset - 1);
+							rebuild();
+							tui.requestRender();
+						} else if (matchesKey(data, "down") || data === "j" || data === "J") {
+							const maxOffset = Math.max(0, entries.length - maxVisible);
+							scrollOffset = Math.min(maxOffset, scrollOffset + 1);
+							rebuild();
+							tui.requestRender();
+						} else if (data === "g") {
+							scrollOffset = 0;
+							rebuild();
+							tui.requestRender();
+						} else if (data === "G") {
+							scrollOffset = Math.max(0, entries.length - maxVisible);
+							rebuild();
+							tui.requestRender();
+						}
+					},
+				};
+			});
+		},
+	});
+
 	pi.registerTool({
 		name: "ralph_loop",
 		label: "Ralph Loop",
@@ -984,6 +1739,8 @@ export default function (pi: ExtensionAPI) {
 				sleepMs: DEFAULT_LOOP_SLEEP_MS,
 				lastCondition: { stdout: "", stderr: "", exitCode: 0 },
 				prompt: emptyPrompt,
+				steering: [...loopControl.steering, ...loopControl.steeringOnce],
+				status: loopControl.status,
 				...overrides,
 			});
 
@@ -1158,23 +1915,51 @@ export default function (pi: ExtensionAPI) {
 			}
 			loopParams.confirmProjectAgents = false;
 
+			const runAbortController = new AbortController();
+			const mergedSignal = mergeAbortSignals(signal, runAbortController.signal);
+			const baseLoopParams = cloneLoopParams(loopParams);
+
+			loopControl.status = "running";
+			loopControl.runId = crypto.randomUUID().slice(0, 8);
+			loopControl.iterations = 0;
+			loopControl.steering = [];
+			loopControl.steeringOnce = [];
+			loopControl.paused = false;
+			loopControl.abortController = runAbortController;
+			loopControl.lastDetails = null;
+
+			if (ctx.hasUI) {
+				ctx.ui.setStatus("ralph-loop", getLoopStatusLine());
+			}
+
 			const iterations: LoopIterationResult[] = [];
 			let stopReason = "running";
 			let errorMessage = "";
 			let lastCondition = { stdout: "", stderr: "", exitCode: 0 };
 
-			const buildLoopDetails = (currentIterations: LoopIterationResult[]) => ({
-				iterations: [...currentIterations],
-				stopReason,
-				conditionCommand,
-				conditionSource,
-				maxIterations,
-				sleepMs,
-				lastCondition,
-				prompt: promptInfo,
-			});
+			const buildLoopDetails = (currentIterations: LoopIterationResult[]): RalphLoopDetails => {
+				const details: RalphLoopDetails = {
+					iterations: [...currentIterations],
+					stopReason,
+					conditionCommand,
+					conditionSource,
+					maxIterations,
+					sleepMs,
+					lastCondition,
+					prompt: promptInfo,
+					steering: [...loopControl.steering, ...loopControl.steeringOnce],
+					status: loopControl.status,
+				};
+				loopControl.iterations = currentIterations.length;
+				loopControl.lastDetails = details;
+				return details;
+			};
 
 			const emitUpdate = () => {
+				const details = buildLoopDetails(iterations);
+				if (ctx.hasUI) {
+					ctx.ui.setStatus("ralph-loop", getLoopStatusLine());
+				}
 				if (!onUpdate) return;
 				onUpdate({
 					content: [
@@ -1183,17 +1968,22 @@ export default function (pi: ExtensionAPI) {
 							text: `ralph-loop: ${iterations.length}/${maxIterations} iterations complete`,
 						},
 					],
-					details: buildLoopDetails(iterations),
+					details,
 				});
 			};
 
 			for (let i = 0; i < maxIterations; i++) {
-				if (signal?.aborted) {
+				if (mergedSignal?.aborted) {
 					stopReason = "aborted";
 					break;
 				}
 
-				const condition = await checkLoopCondition(pi, conditionCommand, ctx.cwd, signal);
+				if (mergedSignal?.aborted) {
+					stopReason = "aborted";
+					break;
+				}
+
+				const condition = await checkLoopCondition(pi, conditionCommand, ctx.cwd, mergedSignal);
 				lastCondition = { stdout: condition.stdout, stderr: condition.stderr, exitCode: condition.exitCode };
 				if (!condition.shouldContinue) {
 					stopReason = "condition-false";
@@ -1214,22 +2004,39 @@ export default function (pi: ExtensionAPI) {
 								isError: partial.isError,
 							},
 						];
+						const details = buildLoopDetails(streamingIterations);
+						if (ctx.hasUI) {
+							ctx.ui.setStatus("ralph-loop", getLoopStatusLine());
+						}
 						onUpdate({
 							content: partial.content ?? [
 								{ type: "text", text: `ralph-loop iteration ${iterationIndex} running...` },
 							],
-							details: buildLoopDetails(streamingIterations),
+							details,
 						});
 					}
 					: undefined;
 
 				let runResult: LoopExecutionResult | null = null;
+				const steeringOnceCount = loopControl.steeringOnce.length;
+				const steeringText = formatSteeringText([...loopControl.steering, ...loopControl.steeringOnce]);
+				const iterationParams = applySteeringToParams(baseLoopParams, steeringText);
 				try {
-					runResult = await executeSubagentOnce(loopParams, ctx, signal, iterationUpdate);
+					runResult = await executeSubagentOnce(
+						iterationParams,
+						ctx,
+						mergedSignal,
+						iterationUpdate,
+						registerActiveRun,
+					);
 				} catch (error: any) {
-					stopReason = signal?.aborted ? "aborted" : "error";
+					stopReason = mergedSignal?.aborted ? "aborted" : "error";
 					errorMessage = error?.message || String(error);
 					break;
+				}
+				loopControl.steeringOnce = loopControl.steeringOnce.slice(steeringOnceCount);
+				if (loopControl.paused && activeRuns.size === 0) {
+					clearPausedState(loopControl);
 				}
 
 				iterations.push({
@@ -1247,7 +2054,7 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				if (sleepMs > 0 && i < maxIterations - 1) {
-					await sleep(sleepMs, signal);
+					await sleep(sleepMs, mergedSignal);
 				}
 			}
 
@@ -1270,19 +2077,22 @@ export default function (pi: ExtensionAPI) {
 			if (errorMessage && errorMessage !== lastOutput) summaryLines.push(`Error: ${errorMessage}`);
 			if (lastOutput) summaryLines.push(`Last output:\n${lastOutput}`);
 
+			loopControl.status = "idle";
+			loopControl.abortController = null;
+			loopControl.paused = false;
+			if (ctx.hasUI) {
+				ctx.ui.setStatus("ralph-loop", undefined);
+			}
+
+			const finalDetails = buildLoopDetails(iterations);
+			const exportText = formatLoopEntriesText(finalDetails);
+			const summaryText = exportText
+				? `${summaryLines.join("\n\n")}\n\nDetails:\n${exportText}`
+				: summaryLines.join("\n\n");
 			const isError = stopReason === "error" || stopReason === "aborted";
 			return {
-				content: [{ type: "text", text: summaryLines.join("\n\n") }],
-				details: {
-					iterations,
-					stopReason,
-					conditionCommand,
-					conditionSource,
-					maxIterations,
-					sleepMs,
-					lastCondition,
-					prompt: promptInfo,
-				},
+				content: [{ type: "text", text: summaryText }],
+				details: finalDetails,
 				isError,
 			};
 		},
@@ -1325,7 +2135,6 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const iterations = details.iterations || [];
-			const prompt = details.prompt ?? { mode: "single", items: [] };
 			const isError = details.stopReason === "error" || details.stopReason === "aborted";
 			const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
 			const header =
@@ -1334,86 +2143,26 @@ export default function (pi: ExtensionAPI) {
 				theme.fg("toolTitle", theme.bold("ralph_loop ")) +
 				theme.fg("accent", `${iterations.length} iteration${iterations.length === 1 ? "" : "s"}`);
 
-			if (!expanded) {
-				let text = `${header}\n${theme.fg("muted", `Stop: ${details.stopReason}`)}`;
-				text += `\n${theme.fg("dim", `Condition: ${details.conditionCommand} (${details.conditionSource})`)}`;
-				if (prompt.items.length > 0) {
-					const preview = formatLoopPromptItem(prompt.items[0], 60);
-					const more = prompt.items.length > 1 ? ` +${prompt.items.length - 1} more` : "";
-					text += `\n${theme.fg("dim", `Prompt: ${preview}${more}`)}`;
-				}
-				const lastOutput = iterations.length > 0 ? iterations[iterations.length - 1].output : "";
-				if (lastOutput) {
-					const preview = lastOutput.split("\n").slice(0, 3).join("\n");
-					text += `\n${theme.fg("toolOutput", preview)}`;
-				} else {
-					text += `\n${theme.fg("muted", "(no output)")}`;
-				}
-				text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
-				return new Text(text, 0, 0);
-			}
-
-			const mdTheme = getMarkdownTheme();
+			const wrapper = new Container();
+			const mainBox = new Box(1, 0, (text: string) => theme.bg("toolPendingBg", text));
 			const container = new Container();
-			container.addChild(new Text(header, 0, 0));
-			container.addChild(new Text(theme.fg("muted", `Stop: ${details.stopReason}`), 0, 0));
-			container.addChild(
-				new Text(theme.fg("dim", `Condition: ${details.conditionCommand} (${details.conditionSource})`), 0, 0),
-			);
-			if (prompt.items.length > 0) {
-				container.addChild(new Text(theme.fg("muted", "Prompt:"), 0, 0));
-				for (let i = 0; i < prompt.items.length; i++) {
-					const line = formatLoopPromptItem(prompt.items[i], 120);
-					container.addChild(new Text(theme.fg("dim", `${i + 1}. ${line}`), 0, 0));
-				}
-			}
+
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 			container.addChild(new Spacer(1));
+			container.addChild(new Text(header, 1, 0));
+			container.addChild(new Spacer(1));
+			container.addChild(new DynamicBorder((s: string) => theme.fg("muted", s)));
 
-			for (const iteration of iterations) {
-				container.addChild(
-					new Text(
-						theme.fg("muted", `─── Iteration ${iteration.index}`) +
-							theme.fg("dim", ` (${iteration.details.mode})`),
-						0,
-						0,
-					),
-				);
+			const entriesComponent = renderLoopEntries(buildLoopEntries(details), theme, undefined, process.cwd());
+			const contentComponent = expanded
+				? entriesComponent
+				: truncateComponentLines(entriesComponent, COLLAPSED_LINE_LIMIT, theme);
+			container.addChild(contentComponent);
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
-				for (const r of iteration.details.results) {
-					const rIcon =
-						r.exitCode !== 0 || r.stopReason === "error" || r.stopReason === "aborted"
-							? theme.fg("error", "✗")
-							: theme.fg("success", "✓");
-					const headerLine =
-						rIcon +
-						" " +
-						theme.fg("accent", r.agent) +
-						theme.fg("muted", ` (${r.agentSource})`);
-					container.addChild(new Text(headerLine, 0, 0));
-
-					const displayItems = getDisplayItems(r.messages);
-					for (const item of displayItems) {
-						if (item.type === "toolCall") {
-							container.addChild(
-								new Text(
-									theme.fg("muted", "→ ") +
-										formatToolCall(item.name, item.args, theme.fg.bind(theme)),
-									0,
-									0,
-								),
-							);
-						}
-					}
-
-					const finalOutput = getFinalOutput(r.messages);
-					if (finalOutput) {
-						container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
-					}
-				}
-				container.addChild(new Spacer(1));
-			}
-
-			return container;
+			mainBox.addChild(container);
+			wrapper.addChild(mainBox);
+			return wrapper;
 		},
 	});
 }

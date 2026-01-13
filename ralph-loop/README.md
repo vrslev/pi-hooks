@@ -25,6 +25,20 @@ No npm install is required for this extension (pi provides the runtime deps).
 - Takes a prompt and exit condition (exit condition optional)
 - Can supply max iterations and minimum delay between each
 - Optionally supply model and thinking
+- Interactive steering + control commands when running in UI mode
+
+## Interactive Controls
+
+While `ralph_loop` is running in interactive mode:
+
+- `/ralph-steer <message>` to append steering instructions (`--once` for one-off)
+- `/ralph-clear` to clear queued steering messages
+- `/ralph-pause` / `/ralph-resume` to pause/resume the currently running iteration
+- `/ralph-stop` to abort the loop
+- `/ralph-status` to show loop status
+- `/ralph-view` to open the scrollable viewer for the latest run
+
+Tool results render with the rich UI by default. Collapsed view shows the last 30 lines (Ctrl+O to expand). Steering messages are sent to the currently running iteration when possible, otherwise queued for the next iteration. Exported sessions include a plain-text loop log.
 
 Example prompt: "Use ralph loop to check the current time five times, sleeping 1s between iterations."
 
