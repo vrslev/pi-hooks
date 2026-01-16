@@ -246,7 +246,7 @@ function countFilesInDirectory(dirPath: string, maxCount: number): number {
  * Check if an untracked directory has too many files to include in snapshot.
  * @param root - Repository root path
  * @param relativePath - Directory path relative to repo root
- * @returns true if directory contains more than MAX_UNTRACKED_DIR_FILES files
+ * @returns true if directory contains at least MAX_UNTRACKED_DIR_FILES files
  */
 export function isLargeDirectory(root: string, relativePath: string): boolean {
   try {
@@ -255,20 +255,115 @@ export function isLargeDirectory(root: string, relativePath: string): boolean {
     if (!stats.isDirectory()) return false;
 
     const fileCount = countFilesInDirectory(fullPath, MAX_UNTRACKED_DIR_FILES);
-    return fileCount > MAX_UNTRACKED_DIR_FILES;
+    return fileCount >= MAX_UNTRACKED_DIR_FILES;
   } catch {
     return false;
   }
 }
 
 /**
- * Get the top-level directory of a path.
- * @param path - File path (relative to repo root)
- * @returns Top-level directory or empty string if at root
+ * Normalize a git-reported path to use forward slashes and no leading ./.
  */
-function getTopLevelDir(path: string): string {
-  const components = path.split(/[/\\]/);
-  return components.length > 1 ? components[0] : "";
+function normalizeGitPath(path: string): string {
+  let normalized = path.replace(/\\/g, "/");
+  if (normalized.startsWith("./")) {
+    normalized = normalized.slice(2);
+  }
+  return normalized.replace(/\/$/, "");
+}
+
+function getParentDir(path: string): string {
+  const parts = path.split(/[/\\]/).filter(Boolean);
+  if (parts.length <= 1) return ".";
+  return parts.slice(0, -1).join("/");
+}
+
+function pathDepth(path: string): number {
+  return path.split(/[/\\]/).filter(Boolean).length;
+}
+
+function isPathWithinDir(path: string, dir: string): boolean {
+  if (!dir || dir === ".") return true;
+  if (path === dir) return true;
+  return path.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
+}
+
+function isPathWithinAnyDir(path: string, dirs: Set<string>): boolean {
+  for (const dir of dirs) {
+    if (isPathWithinDir(path, dir)) return true;
+  }
+  return false;
+}
+
+function isPathAncestorOfAnyDir(path: string, dirs: Set<string>): boolean {
+  for (const dir of dirs) {
+    if (isPathWithinDir(dir, path)) return true;
+  }
+  return false;
+}
+
+function extractStatusPathAfterFields(
+  record: string,
+  fieldsBeforePath: number
+): string | null {
+  if (fieldsBeforePath <= 0) return null;
+  let spaces = 0;
+  for (let i = 0; i < record.length; i++) {
+    if (record[i] === " ") {
+      spaces++;
+      if (spaces === fieldsBeforePath) {
+        const path = record.slice(i + 1);
+        return path.length > 0 ? path : null;
+      }
+    }
+  }
+  return null;
+}
+
+interface LargeUntrackedDir {
+  path: string;
+  fileCount: number;
+}
+
+function detectLargeUntrackedDirs(
+  files: string[],
+  dirs: string[],
+  threshold: number
+): LargeUntrackedDir[] {
+  if (threshold <= 0 || files.length === 0) return [];
+
+  const counts = new Map<string, number>();
+  const sortedDirs = [...dirs].sort((a, b) => {
+    const depthDiff = pathDepth(b) - pathDepth(a);
+    return depthDiff !== 0 ? depthDiff : a.localeCompare(b);
+  });
+
+  for (const file of files) {
+    let key: string | null = null;
+    for (const dir of sortedDirs) {
+      if (isPathWithinDir(file, dir)) {
+        key = dir;
+        break;
+      }
+    }
+    if (!key) {
+      const parent = getParentDir(file);
+      key = parent || ".";
+    }
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+
+  const result = [...counts.entries()]
+    .filter(([, count]) => count >= threshold)
+    .map(([path, fileCount]) => ({ path, fileCount }))
+    .filter((entry) => entry.path && entry.path !== ".");
+
+  result.sort((a, b) => {
+    const countDiff = b.fileCount - a.fileCount;
+    return countDiff !== 0 ? countDiff : a.path.localeCompare(b.path);
+  });
+
+  return result;
 }
 
 /**
@@ -290,6 +385,105 @@ async function getUntrackedFiles(
   }
 }
 
+interface StatusSnapshot {
+  trackedPaths: string[];
+  untrackedFiles: string[];
+  untrackedFilesForIndex: string[];
+  untrackedFilesForDirScan: string[];
+  untrackedDirs: string[];
+  skippedLargeFiles: string[];
+}
+
+async function captureStatusSnapshot(root: string): Promise<StatusSnapshot> {
+  const snapshot: StatusSnapshot = {
+    trackedPaths: [],
+    untrackedFiles: [],
+    untrackedFilesForIndex: [],
+    untrackedFilesForDirScan: [],
+    untrackedDirs: [],
+    skippedLargeFiles: [],
+  };
+
+  const output = await git(
+    "status --porcelain=2 -z --untracked-files=all",
+    root
+  ).catch(() => "");
+
+  if (!output) return snapshot;
+
+  const entries = output.split("\0").filter(Boolean);
+  let expectRenameSource = false;
+
+  for (const entry of entries) {
+    if (expectRenameSource) {
+      const normalized = normalizeGitPath(entry);
+      if (normalized) snapshot.trackedPaths.push(normalized);
+      expectRenameSource = false;
+      continue;
+    }
+
+    const recordType = entry[0];
+    switch (recordType) {
+      case "?":
+      case "!": {
+        const spaceIndex = entry.indexOf(" ");
+        if (spaceIndex === -1) break;
+        const rawPath = entry.slice(spaceIndex + 1);
+        if (!rawPath) break;
+        const normalized = normalizeGitPath(rawPath);
+        if (!normalized) break;
+        if (shouldIgnoreForSnapshot(normalized)) break;
+
+        const fullPath = join(root, normalized);
+        let stats: ReturnType<typeof statSync> | null = null;
+        try {
+          stats = statSync(fullPath);
+        } catch {
+          stats = null;
+        }
+
+        if (stats?.isDirectory()) {
+          snapshot.untrackedDirs.push(normalized);
+          break;
+        }
+
+        snapshot.untrackedFiles.push(normalized);
+        snapshot.untrackedFilesForDirScan.push(normalized);
+
+        const isLarge = stats?.isFile()
+          ? stats.size > MAX_UNTRACKED_FILE_SIZE
+          : false;
+        if (isLarge) {
+          snapshot.skippedLargeFiles.push(normalized);
+        } else {
+          snapshot.untrackedFilesForIndex.push(normalized);
+        }
+        break;
+      }
+      case "1": {
+        const path = extractStatusPathAfterFields(entry, 8);
+        if (path) snapshot.trackedPaths.push(normalizeGitPath(path));
+        break;
+      }
+      case "2": {
+        const path = extractStatusPathAfterFields(entry, 9);
+        if (path) snapshot.trackedPaths.push(normalizeGitPath(path));
+        expectRenameSource = true;
+        break;
+      }
+      case "u": {
+        const path = extractStatusPathAfterFields(entry, 10);
+        if (path) snapshot.trackedPaths.push(normalizeGitPath(path));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  return snapshot;
+}
+
 /**
  * Result of getFilesToAdd with filtering information
  */
@@ -300,7 +494,7 @@ interface FilesToAddResult {
   allUntracked: string[];
   /** Large files that were skipped (> 10 MiB) */
   skippedLargeFiles: string[];
-  /** Large directories that were skipped (> 200 files) */
+  /** Large directories that were skipped (>= 200 untracked files) */
   skippedLargeDirs: string[];
 }
 
@@ -314,74 +508,35 @@ interface FilesToAddResult {
 async function getFilesToAdd(
   root: string
 ): Promise<FilesToAddResult> {
-  // Get modified/deleted tracked files (use real index, not temporary)
-  const modifiedOutput = await git(
-    "diff --name-only",
-    root
-  ).catch(() => "");
+  const status = await captureStatusSnapshot(root);
 
-  // Get staged files (use real index, not temporary)
-  const stagedOutput = await git(
-    "diff --cached --name-only",
-    root
-  ).catch(() => "");
+  const largeDirEntries = detectLargeUntrackedDirs(
+    status.untrackedFilesForDirScan,
+    status.untrackedDirs,
+    MAX_UNTRACKED_DIR_FILES
+  );
 
-  // Get untracked files (use real index, not temporary)
-  const allUntracked = await getUntrackedFiles(root);
-
-  // Identify large directories from untracked files
-  // We need to check top-level untracked directories
-  const untrackedTopDirs = new Set<string>();
-  for (const file of allUntracked) {
-    const topDir = getTopLevelDir(file);
-    if (topDir) {
-      untrackedTopDirs.add(topDir);
-    }
-  }
-
-  // Check which top-level directories are too large
-  const skippedLargeDirs: string[] = [];
-  for (const dir of untrackedTopDirs) {
-    if (isLargeDirectory(root, dir)) {
-      skippedLargeDirs.push(dir);
-    }
-  }
+  const skippedLargeDirs = largeDirEntries.map((entry) => entry.path);
   const skippedLargeDirsSet = new Set(skippedLargeDirs);
 
-  // Identify large files from untracked files
-  const skippedLargeFiles: string[] = [];
-  for (const file of allUntracked) {
-    const topDir = getTopLevelDir(file);
-    // Skip if already in a large directory
-    if (topDir && skippedLargeDirsSet.has(topDir)) continue;
-    // Check if file itself is too large
-    if (isLargeFile(root, file)) {
-      skippedLargeFiles.push(file);
-    }
-  }
-  const skippedLargeFilesSet = new Set(skippedLargeFiles);
+  const untrackedFilesForIndex = status.untrackedFilesForIndex.filter(
+    (path) => !isPathWithinAnyDir(path, skippedLargeDirsSet)
+  );
 
-  // Combine all files
-  const allFiles = new Set<string>();
+  const skippedLargeFiles = status.skippedLargeFiles.filter(
+    (path) => !isPathWithinAnyDir(path, skippedLargeDirsSet)
+  );
 
-  if (modifiedOutput) {
-    modifiedOutput.split("\n").filter(Boolean).forEach((f) => allFiles.add(f));
-  }
-  if (stagedOutput) {
-    stagedOutput.split("\n").filter(Boolean).forEach((f) => allFiles.add(f));
-  }
-  allUntracked.forEach((f) => allFiles.add(f));
+  const filesToAddSet = new Set<string>();
+  status.trackedPaths.forEach((path) => filesToAddSet.add(path));
+  untrackedFilesForIndex.forEach((path) => filesToAddSet.add(path));
 
-  // Filter out ignored paths, large files, and files in large directories
-  const filtered = [...allFiles].filter((f) => {
-    if (shouldIgnoreForSnapshot(f)) return false;
-    if (skippedLargeFilesSet.has(f)) return false;
-    const topDir = getTopLevelDir(f);
-    if (topDir && skippedLargeDirsSet.has(topDir)) return false;
-    return true;
-  });
-
-  return { filtered, allUntracked, skippedLargeFiles, skippedLargeDirs };
+  return {
+    filtered: [...filesToAddSet],
+    allUntracked: status.untrackedFiles,
+    skippedLargeFiles,
+    skippedLargeDirs,
+  };
 }
 
 // ============================================================================
@@ -418,8 +573,7 @@ export async function createCheckpoint(
     const preexistingUntrackedFiles = allUntracked.filter((f) => {
       if (shouldIgnoreForSnapshot(f)) return false;
       if (skippedLargeFilesSet.has(f)) return false;
-      const topDir = getTopLevelDir(f);
-      if (topDir && skippedLargeDirsSet.has(topDir)) return false;
+      if (isPathWithinAnyDir(f, skippedLargeDirsSet)) return false;
       return true;
     });
 
@@ -436,7 +590,7 @@ export async function createCheckpoint(
         const batch = filesToAdd.slice(i, i + BATCH_SIZE);
         // Use -- to separate paths from options
         const pathArgs = batch.map((f) => `"${f}"`).join(" ");
-        await git(`add -f -- ${pathArgs}`, root, { env: tmpEnv });
+        await git(`add --all -- ${pathArgs}`, root, { env: tmpEnv });
       }
     }
 
@@ -554,8 +708,7 @@ async function safeCleanUntrackedFiles(
     if (preexistingSet.has(f)) return false;
     if (shouldIgnoreForSnapshot(f)) return false;
     if (skippedLargeFilesSet.has(f)) return false;
-    const topDir = getTopLevelDir(f);
-    if (topDir && skippedLargeDirsSet.has(topDir)) return false;
+    if (isPathWithinAnyDir(f, skippedLargeDirsSet)) return false;
     return true;
   });
 
@@ -584,11 +737,9 @@ async function safeCleanUntrackedFiles(
           if (shouldIgnoreForSnapshot(path)) return false;
           // Don't clean skipped large files
           if (skippedLargeFilesSet.has(path)) return false;
-          // Don't clean skipped large directories
-          if (skippedLargeDirsSet.has(path)) return false;
-          // Don't clean if it's inside a skipped large directory
-          const topDir = getTopLevelDir(path);
-          if (topDir && skippedLargeDirsSet.has(topDir)) return false;
+          // Don't clean skipped large directories (or anything inside/above them)
+          if (isPathWithinAnyDir(path, skippedLargeDirsSet)) return false;
+          if (isPathAncestorOfAnyDir(path, skippedLargeDirsSet)) return false;
           return true;
         });
 

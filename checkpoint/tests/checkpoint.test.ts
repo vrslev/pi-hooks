@@ -417,7 +417,7 @@ test("checkpoint: excludes node_modules from snapshot", () =>
     // The preexistingUntrackedFiles should NOT include node_modules files
     // (they're filtered out because they're ignored)
     assert(
-      !cp.preexistingUntrackedFiles?.some((f) =>
+      !(cp.preexistingUntrackedFiles ?? []).some((f) =>
         f.includes("node_modules")
       ),
       "preexistingUntrackedFiles should not include node_modules"
@@ -445,7 +445,7 @@ test("restore: preserves pre-existing untracked files", () =>
 
     // Verify the file is tracked as pre-existing
     assert(
-      cp.preexistingUntrackedFiles?.includes("local-config.txt"),
+      (cp.preexistingUntrackedFiles ?? []).includes("local-config.txt"),
       "local-config.txt should be in preexistingUntrackedFiles"
     );
 
@@ -542,14 +542,30 @@ test("isLargeDirectory: returns true for directories > 200 files", () =>
     assert(isLargeDirectory(root, "largedir"), "Directory with 201 files should be large");
   }));
 
-test("isLargeDirectory: returns false for directories exactly at limit", () =>
+test("isLargeDirectory: returns false for directories just below the limit", () =>
+  withTestRepo(async (dir, root) => {
+    await mkdir(join(dir, "justbelow"));
+    // Create one less than the limit
+    for (let i = 0; i < MAX_UNTRACKED_DIR_FILES - 1; i++) {
+      await writeFile(join(dir, "justbelow", `file${i}.txt`), `content ${i}`);
+    }
+    assert(
+      !isLargeDirectory(root, "justbelow"),
+      "Directory with 199 files should not be large"
+    );
+  }));
+
+test("isLargeDirectory: returns true for directories exactly at the limit", () =>
   withTestRepo(async (dir, root) => {
     await mkdir(join(dir, "exactdir"));
     // Create exactly 200 files
     for (let i = 0; i < MAX_UNTRACKED_DIR_FILES; i++) {
       await writeFile(join(dir, "exactdir", `file${i}.txt`), `content ${i}`);
     }
-    assert(!isLargeDirectory(root, "exactdir"), "Directory with exactly 200 files should not be large");
+    assert(
+      isLargeDirectory(root, "exactdir"),
+      "Directory with exactly 200 files should be large"
+    );
   }));
 
 test("checkpoint: excludes large files from snapshot", () =>
@@ -565,31 +581,31 @@ test("checkpoint: excludes large files from snapshot", () =>
 
     // Verify the large file is tracked as skipped
     assert(
-      cp.skippedLargeFiles?.includes("large-file.bin"),
+      (cp.skippedLargeFiles ?? []).includes("large-file.bin"),
       "large-file.bin should be in skippedLargeFiles"
     );
 
     // Verify the regular file is tracked as pre-existing
     assert(
-      cp.preexistingUntrackedFiles?.includes("regular.txt"),
+      (cp.preexistingUntrackedFiles ?? []).includes("regular.txt"),
       "regular.txt should be in preexistingUntrackedFiles"
     );
 
     // Large file should NOT be in preexistingUntrackedFiles
     assert(
-      !cp.preexistingUntrackedFiles?.includes("large-file.bin"),
+      !(cp.preexistingUntrackedFiles ?? []).includes("large-file.bin"),
       "large-file.bin should NOT be in preexistingUntrackedFiles"
     );
   }));
 
-test("checkpoint: excludes large directories from snapshot", () =>
+test("checkpoint: excludes large untracked directories from snapshot", () =>
   withTestRepo(async (dir, root) => {
-    // Create a large directory (> 200 files)
+    // Create a large directory (>= 200 files) that is entirely untracked
     await mkdir(join(dir, "large-dir"));
-    for (let i = 0; i < MAX_UNTRACKED_DIR_FILES + 10; i++) {
+    for (let i = 0; i < MAX_UNTRACKED_DIR_FILES; i++) {
       await writeFile(join(dir, "large-dir", `file${i}.txt`), `content ${i}`);
     }
-    
+
     // Also create a regular file
     await writeFile(join(dir, "regular.txt"), "regular content");
 
@@ -597,22 +613,153 @@ test("checkpoint: excludes large directories from snapshot", () =>
 
     // Verify the large directory is tracked as skipped
     assert(
-      cp.skippedLargeDirs?.includes("large-dir"),
+      (cp.skippedLargeDirs ?? []).includes("large-dir"),
       "large-dir should be in skippedLargeDirs"
     );
 
     // Verify the regular file is tracked as pre-existing
     assert(
-      cp.preexistingUntrackedFiles?.includes("regular.txt"),
+      (cp.preexistingUntrackedFiles ?? []).includes("regular.txt"),
       "regular.txt should be in preexistingUntrackedFiles"
     );
 
     // Files from large-dir should NOT be in preexistingUntrackedFiles
     assert(
-      !cp.preexistingUntrackedFiles?.some((f) => f.startsWith("large-dir/")),
+      !(cp.preexistingUntrackedFiles ?? []).some((f) => f.startsWith("large-dir/")),
       "Files from large-dir should NOT be in preexistingUntrackedFiles"
     );
   }));
+
+test("checkpoint: detects nested large untracked directories under tracked parents", () =>
+  withTestRepo(async (dir, root) => {
+    await mkdir(join(dir, "src"));
+    await writeFile(join(dir, "src", "main.ts"), "console.log('hi');");
+    await git("add src/main.ts", dir);
+    await git("commit -m 'add src'", dir);
+
+    const generatedDir = join(dir, "src", "generated", "cache");
+    await mkdir(generatedDir, { recursive: true });
+    for (let i = 0; i < MAX_UNTRACKED_DIR_FILES + 1; i++) {
+      await writeFile(join(generatedDir, `file${i}.bin`), `data ${i}`);
+    }
+
+    const cp = await createCheckpoint(root, "nested-large-dir-test", 0, "session-1");
+
+    assert(
+      (cp.skippedLargeDirs ?? []).includes("src/generated/cache"),
+      "Nested untracked directory should be skipped when it exceeds the threshold"
+    );
+
+    assert(
+      !(cp.skippedLargeDirs ?? []).includes("src"),
+      "Tracked parent directory should not be marked as large"
+    );
+
+    assert(
+      !(cp.preexistingUntrackedFiles ?? []).some((f) =>
+        f.startsWith("src/generated/cache/")
+      ),
+      "Files from nested large dir should NOT be in preexistingUntrackedFiles"
+    );
+  }));
+
+test("checkpoint: skips large untracked directories even when tracked files exist", () =>
+  withTestRepo(async (dir, root) => {
+    await mkdir(join(dir, "big-tracked"));
+
+    // Add a tracked file so we can verify it's still snapshotted.
+    await writeFile(join(dir, "big-tracked", "tracked.txt"), "tracked");
+    await git("add big-tracked/tracked.txt", dir);
+    await git("commit -m 'add tracked file in big-tracked'", dir);
+
+    // Modify tracked file so the snapshot captures a working-tree change.
+    await writeFile(join(dir, "big-tracked", "tracked.txt"), "modified tracked");
+
+    // Now create many untracked files in the same directory.
+    for (let i = 0; i < MAX_UNTRACKED_DIR_FILES + 5; i++) {
+      await writeFile(
+        join(dir, "big-tracked", `u${i}.txt`),
+        `untracked ${i}`
+      );
+    }
+
+    const cp = await createCheckpoint(root, "big-tracked-test", 0, "session-1");
+
+    assert(
+      (cp.skippedLargeDirs ?? []).includes("big-tracked"),
+      "big-tracked should be skipped when it contains many untracked files"
+    );
+
+    assert(
+      !(cp.preexistingUntrackedFiles ?? []).some((f) => f.startsWith("big-tracked/u")),
+      "Untracked files inside big-tracked should be excluded from preexistingUntrackedFiles"
+    );
+
+    // Mess up state
+    await git("checkout -- big-tracked/tracked.txt", dir);
+
+    // Restore
+    await restoreCheckpoint(root, cp);
+
+    assert(
+      (await readFile(join(dir, "big-tracked", "tracked.txt"), "utf-8")) ===
+        "modified tracked",
+      "Tracked file inside big-tracked should be restored even when directory is skipped"
+    );
+  }));
+
+test(
+  "restore: tracked directory with many tracked files is not treated as large due to a small number of untracked files",
+  () =>
+    withTestRepo(async (dir, root) => {
+      // Simulate something like a Flutter project: lib/ has many tracked files.
+      await mkdir(join(dir, "lib"));
+      for (let i = 0; i < MAX_UNTRACKED_DIR_FILES + 5; i++) {
+        await writeFile(
+          join(dir, "lib", `tracked${i}.txt`),
+          `tracked content ${i}`
+        );
+      }
+
+      // Commit the directory so it's tracked.
+      await git("add lib", dir);
+      await git("commit -m 'add lib'", dir);
+
+      // Modify a tracked file and add an untracked file inside lib/.
+      await writeFile(join(dir, "lib", "tracked0.txt"), "modified tracked");
+      await writeFile(join(dir, "lib", "new-untracked.txt"), "untracked");
+
+      const cp = await createCheckpoint(
+        root,
+        "tracked-dir-untracked-file-test",
+        0,
+        "session-1"
+      );
+
+      // lib/ contains many files, but only 1 is untracked, so it must NOT be skipped.
+      assert(
+        !(cp.skippedLargeDirs ?? []).includes("lib"),
+        "lib should not be treated as a large untracked directory when it mainly contains tracked files"
+      );
+
+      // Mess up state
+      await git("checkout -- lib/tracked0.txt", dir);
+      await rm(join(dir, "lib", "new-untracked.txt"));
+
+      // Restore
+      await restoreCheckpoint(root, cp);
+
+      assert(
+        (await readFile(join(dir, "lib", "tracked0.txt"), "utf-8")) ===
+          "modified tracked",
+        "Tracked modification inside lib/ should be restored"
+      );
+      assert(
+        existsSync(join(dir, "lib", "new-untracked.txt")),
+        "Untracked file inside lib/ should be restored"
+      );
+    })
+);
 
 test("restore: preserves large files on restore", () =>
   withTestRepo(async (dir, root) => {
