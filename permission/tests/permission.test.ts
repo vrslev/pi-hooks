@@ -600,6 +600,11 @@ test("pipelines: safe pipelines stay at lowest level", async () => {
   assertLevel("ls -la | head -10", "minimal");
   assertLevel("ps aux | grep node", "minimal");
   assertLevel("git log | head", "minimal");
+  // Similar to: cd <dir> && rg ... | head (should remain read-only)
+  assertLevel(
+    "cd /tmp/project && rg -n \"foo|bar|baz\" -S . | head -n 50",
+    "minimal"
+  );
 });
 
 test("pipelines: piping to shell requires high", async () => {
