@@ -1,6 +1,6 @@
 {
   "name": "ralph-loop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Ralph loop extension for pi-coding-agent - looped subagent execution",
   "type": "module",
   "keywords": [

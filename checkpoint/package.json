@@ -1,6 +1,6 @@
 {
   "name": "checkpoint",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Git-based checkpoint extension for pi-coding-agent - creates checkpoints at each turn for code state restoration",
   "type": "module",
   "scripts": {
