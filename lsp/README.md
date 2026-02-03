@@ -34,7 +34,7 @@ Language Server Protocol integration for pi-coding-agent.
 
 Install the package and enable extensions:
 ```bash
-pi install git:github.com/prateekmedia/pi-hooks
+pi install npm:lsp-pi@latest
 pi config
 ```
 

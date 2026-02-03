@@ -13,7 +13,7 @@ Git-based checkpoint extension for [`pi-coding-agent`](https://www.npmjs.com/pac
 
 Install the package and enable the extension:
 ```bash
-pi install git:github.com/prateekmedia/pi-hooks
+pi install npm:checkpoint-pi@latest
 pi config
 ```
 

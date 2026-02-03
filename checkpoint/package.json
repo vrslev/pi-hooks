@@ -1,5 +1,5 @@
 {
-  "name": "checkpoint",
+  "name": "checkpoint-pi",
   "version": "1.0.1",
   "description": "Git-based checkpoint extension for pi-coding-agent - creates checkpoints at each turn for code state restoration",
   "type": "module",
@@ -10,7 +10,8 @@
     "git",
     "checkpoint",
     "pi-coding-agent",
-    "extension"
+    "extension",
+    "pi-package"
   ],
   "author": "",
   "license": "MIT",

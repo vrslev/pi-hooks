@@ -5,7 +5,7 @@ Looped subagent execution via the `ralph_loop` tool.
 ## Installation (ralph-loop only)
 
 ```bash
-pi install git:github.com/prateekmedia/pi-hooks
+pi install npm:ralph-loop-pi@latest
 pi config
 ```
 

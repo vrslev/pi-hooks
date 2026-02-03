@@ -1,5 +1,5 @@
 {
-  "name": "permission",
+  "name": "permission-pi",
   "version": "1.0.1",
   "description": "Layered permission control extension for pi-coding-agent",
   "type": "module",
@@ -10,7 +10,8 @@
     "permission",
     "security",
     "pi-coding-agent",
-    "extension"
+    "extension",
+    "pi-package"
   ],
   "author": "",
   "license": "MIT",

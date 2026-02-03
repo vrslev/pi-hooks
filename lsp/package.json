@@ -1,5 +1,5 @@
 {
-  "name": "lsp",
+  "name": "lsp-pi",
   "version": "1.0.1",
   "description": "LSP extension for pi-coding-agent - provides language server tool and diagnostics feedback for Dart/Flutter, TypeScript, Vue, Svelte, Python, Go, Kotlin, Swift, Rust",
   "scripts": {
@@ -22,7 +22,8 @@
     "swift",
     "rust",
     "pi-coding-agent",
-    "extension"
+    "extension",
+    "pi-package"
   ],
   "author": "",
   "license": "MIT",

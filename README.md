@@ -6,7 +6,7 @@ Minimal reference extensions for [`pi-coding-agent`](https://www.npmjs.com/packa
 
 Install the package:
 ```bash
-pi install git:github.com/prateekmedia/pi-hooks
+pi install npm:pi-hooks@latest
 pi config  # enable/disable extensions
 ```
 
@@ -96,7 +96,7 @@ Repeat past tool calls (bash/edit/write) from the current branch.
 
 1. Install the package and enable extensions:
    ```bash
-   pi install git:github.com/prateekmedia/pi-hooks
+   pi install npm:pi-hooks@latest
    pi config
    ```
 
