@@ -376,8 +376,8 @@ test("kotlin: valid code has no errors", async () => {
 // ============================================================================
 
 test("python: detects type errors", async () => {
-  if (!commandExists("pyright-langserver")) {
-    skip("pyright-langserver not installed");
+  if (!commandExists("ty")) {
+    skip("ty not installed");
   }
 
   const dir = await mkdtemp(join(tmpdir(), "lsp-py-"));
@@ -406,8 +406,8 @@ result = greet(456)  # Type error
 });
 
 test("python: valid code has no errors", async () => {
-  if (!commandExists("pyright-langserver")) {
-    skip("pyright-langserver not installed");
+  if (!commandExists("ty")) {
+    skip("ty not installed");
   }
 
   const dir = await mkdtemp(join(tmpdir(), "lsp-py-"));
