@@ -297,23 +297,23 @@ Use bash to find files: find src -name "*.ts" -type f`,
             const results = await abortable(manager.getDefinition(file!, rLine!, rCol!), signal);
             const locs = results.map(l => formatLocation(l, ctx?.cwd));
             const payload = locs.length ? locs.join("\n") : fromQuery ? `${file}:${rLine}:${rCol}` : "No definitions found.";
-            return { content: [{ type: "text", text: `action: definition\n${qLine}${posLine}${payload}` }], details: results };
+            return { content: [{ type: "text", text: `action: definition\nfile: ${file}\n${qLine}${posLine}${payload}` }], details: results };
           }
           case "references": {
             const results = await abortable(manager.getReferences(file!, rLine!, rCol!), signal);
             const locs = results.map(l => formatLocation(l, ctx?.cwd));
-            return { content: [{ type: "text", text: `action: references\n${qLine}${posLine}${locs.length ? locs.join("\n") : "No references found."}` }], details: results };
+            return { content: [{ type: "text", text: `action: references\nfile: ${file}\n${qLine}${posLine}${locs.length ? locs.join("\n") : "No references found."}` }], details: results };
           }
           case "hover": {
             const result = await abortable(manager.getHover(file!, rLine!, rCol!), signal);
             const payload = result ? formatHover(result.contents) || "No hover information." : "No hover information.";
-            return { content: [{ type: "text", text: `action: hover\n${qLine}${posLine}${payload}` }], details: result ?? null };
+            return { content: [{ type: "text", text: `action: hover\nfile: ${file}\n${qLine}${posLine}${payload}` }], details: result ?? null };
           }
           case "symbols": {
             const symbols = await abortable(manager.getDocumentSymbols(file!), signal);
             const lines = collectSymbols(symbols, 0, [], query);
             const payload = lines.length ? lines.join("\n") : query ? `No symbols matching "${query}".` : "No symbols found.";
-            return { content: [{ type: "text", text: `action: symbols\n${qLine}${payload}` }], details: symbols };
+            return { content: [{ type: "text", text: `action: symbols\nfile: ${file}\n${qLine}${payload}` }], details: symbols };
           }
           case "diagnostics": {
             const result = await abortable(manager.touchFileAndWait(file!, diagnosticsWaitMsForFile(file!)), signal);
@@ -323,7 +323,7 @@ Use bash to find files: find src -name "*.ts" -type f`,
               : !result.receivedResponse
                 ? "Timeout: LSP server did not respond. Try again."
                 : filtered.length ? filtered.map(formatDiagnostic).join("\n") : "No diagnostics.";
-            return { content: [{ type: "text", text: `action: diagnostics\n${sevLine}${payload}` }], details: { ...result, diagnostics: filtered } };
+            return { content: [{ type: "text", text: `action: diagnostics\nfile: ${file}\n${sevLine}${payload}` }], details: { ...result, diagnostics: filtered } };
           }
           case "workspace-diagnostics": {
             if (!files?.length) throw new Error('Action "workspace-diagnostics" requires a "files" array.');
@@ -347,23 +347,23 @@ Use bash to find files: find src -name "*.ts" -type f`,
             }
 
             const summary = `Analyzed ${result.items.length} file(s): ${errors} error(s), ${warnings} warning(s) in ${filesWithIssues} file(s)`;
-            return { content: [{ type: "text", text: `action: workspace-diagnostics\n${sevLine}${summary}\n\n${out.length ? out.join("\n") : "No diagnostics."}` }], details: result };
+            return { content: [{ type: "text", text: `action: workspace-diagnostics\nfiles: ${files.join(', ')}\n${sevLine}${summary}\n\n${out.length ? out.join("\n") : "No diagnostics."}` }], details: result };
           }
           case "signature": {
             const result = await abortable(manager.getSignatureHelp(file!, rLine!, rCol!), signal);
-            return { content: [{ type: "text", text: `action: signature\n${qLine}${posLine}${formatSignature(result)}` }], details: result ?? null };
+            return { content: [{ type: "text", text: `action: signature\nfile: ${file}\n${qLine}${posLine}${formatSignature(result)}` }], details: result ?? null };
           }
           case "rename": {
             if (!newName) throw new Error('Action "rename" requires a "newName" parameter.');
             const result = await abortable(manager.rename(file!, rLine!, rCol!, newName), signal);
-            if (!result) return { content: [{ type: "text", text: `action: rename\n${qLine}${posLine}No rename available at this position.` }], details: null };
+            if (!result) return { content: [{ type: "text", text: `action: rename\nfile: ${file}\n${qLine}${posLine}No rename available at this position.` }], details: null };
             const edits = formatWorkspaceEdit(result, ctx?.cwd, true); // Apply changes to files
-            return { content: [{ type: "text", text: `action: rename\n${qLine}${posLine}newName: ${newName}\n\n${edits}` }], details: result };
+            return { content: [{ type: "text", text: `action: rename\nfile: ${file}\n${qLine}${posLine}newName: ${newName}\n\nChanges applied:\n${edits}` }], details: result };
           }
           case "codeAction": {
             const result = await abortable(manager.getCodeActions(file!, rLine!, rCol!, endLine, endColumn), signal);
             const actions = formatCodeActions(result);
-            return { content: [{ type: "text", text: `action: codeAction\n${qLine}${posLine}${actions.length ? actions.join("\n") : "No code actions available."}` }], details: result };
+            return { content: [{ type: "text", text: `action: codeAction\nfile: ${file}\n${qLine}${posLine}${actions.length ? actions.join("\n") : "No code actions available."}` }], details: result };
           }
         }
       } catch (e) {
@@ -391,7 +391,7 @@ Use bash to find files: find src -name "*.ts" -type f`,
 
       let headerEnd = 0;
       for (let i = 0; i < lines.length; i++) {
-        if (/^(action|query|severity|resolvedPosition):/.test(lines[i])) headerEnd = i + 1;
+        if (/^(action|file|files|query|severity|resolvedPosition|newName):/.test(lines[i])) headerEnd = i + 1;
         else break;
       }
 
