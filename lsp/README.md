@@ -18,7 +18,7 @@ Language Server Protocol integration for pi-coding-agent.
 | Vue | `vue-language-server` | `package.json`, `vite.config.ts` |
 | Svelte | `svelteserver` | `svelte.config.js` |
 | Dart/Flutter | `dart language-server` | `pubspec.yaml` |
-| Python | `ty` | `pyproject.toml`, `requirements.txt`, `ty.toml` |
+| Python | `pyright-langserver` | `pyproject.toml`, `requirements.txt` |
 | Go | `gopls` | `go.mod` |
 | Kotlin | `kotlin-ls` | `settings.gradle(.kts)`, `build.gradle(.kts)`, `pom.xml` |
 | Swift | `sourcekit-lsp` | `Package.swift`, Xcode (`*.xcodeproj` / `*.xcworkspace`) |
@@ -54,8 +54,8 @@ npm i -g @vue/language-server
 # Svelte
 npm i -g svelte-language-server
 
-# Python (ty)
-pipx install ty
+# Python
+npm i -g pyright
 
 # Go (install gopls via go install)
 go install golang.org/x/tools/gopls@latest

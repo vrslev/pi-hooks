@@ -163,9 +163,9 @@ test("LSP_SERVERS: has Swift server", async () => {
   assertIncludes(server!.extensions, ".swift", "Should handle .swift");
 });
 
-test("LSP_SERVERS: has ty server", async () => {
-  const server = LSP_SERVERS.find(s => s.id === "ty");
-  assert(server !== undefined, "Should have ty server");
+test("LSP_SERVERS: has Pyright server", async () => {
+  const server = LSP_SERVERS.find(s => s.id === "pyright");
+  assert(server !== undefined, "Should have pyright server");
   assertIncludes(server!.extensions, ".py", "Should handle .py");
   assertIncludes(server!.extensions, ".pyi", "Should handle .pyi");
 });
@@ -442,34 +442,34 @@ test("swift: finds root with Xcode workspace", async () => {
 // Python root detection tests
 // ============================================================================
 
-test("ty: finds root with pyproject.toml", async () => {
+test("pyright: finds root with pyproject.toml", async () => {
   await withTempDir({
     "pyproject.toml": "[project]\nname = \"myapp\"",
     "src/main.py": "print('hello')",
   }, async (dir) => {
-    const server = LSP_SERVERS.find(s => s.id === "ty")!;
+    const server = LSP_SERVERS.find(s => s.id === "pyright")!;
     const root = server.findRoot(join(dir, "src/main.py"), dir);
     assertEquals(root, dir, "Should find root at pyproject.toml location");
   });
 });
 
-test("ty: finds root with setup.py", async () => {
+test("pyright: finds root with setup.py", async () => {
   await withTempDir({
     "setup.py": "from setuptools import setup",
     "myapp/main.py": "print('hello')",
   }, async (dir) => {
-    const server = LSP_SERVERS.find(s => s.id === "ty")!;
+    const server = LSP_SERVERS.find(s => s.id === "pyright")!;
     const root = server.findRoot(join(dir, "myapp/main.py"), dir);
     assertEquals(root, dir, "Should find root at setup.py location");
   });
 });
 
-test("ty: finds root with requirements.txt", async () => {
+test("pyright: finds root with requirements.txt", async () => {
   await withTempDir({
     "requirements.txt": "flask>=2.0",
     "app.py": "from flask import Flask",
   }, async (dir) => {
-    const server = LSP_SERVERS.find(s => s.id === "ty")!;
+    const server = LSP_SERVERS.find(s => s.id === "pyright")!;
     const root = server.findRoot(join(dir, "app.py"), dir);
     assertEquals(root, dir, "Should find root at requirements.txt location");
   });
@@ -623,28 +623,28 @@ test("dart: monorepo with multiple packages", async () => {
 // Additional Python tests (parity with TypeScript)
 // ============================================================================
 
-test("ty: finds root with ty.toml", async () => {
+test("pyright: finds root with pyrightconfig.json", async () => {
   await withTempDir({
-    "ty.toml": "{}",
+    "pyrightconfig.json": "{}",
     "src/app.py": "print('hello')",
   }, async (dir) => {
-    const server = LSP_SERVERS.find(s => s.id === "ty")!;
+    const server = LSP_SERVERS.find(s => s.id === "pyright")!;
     const root = server.findRoot(join(dir, "src/app.py"), dir);
-    assertEquals(root, dir, "Should find root at ty.toml location");
+    assertEquals(root, dir, "Should find root at pyrightconfig.json location");
   });
 });
 
-test("ty: returns undefined when no marker files", async () => {
+test("pyright: returns undefined when no marker files", async () => {
   await withTempDir({
     "script.py": "print('hello')",
   }, async (dir) => {
-    const server = LSP_SERVERS.find(s => s.id === "ty")!;
+    const server = LSP_SERVERS.find(s => s.id === "pyright")!;
     const root = server.findRoot(join(dir, "script.py"), dir);
     assertEquals(root, undefined, "Should return undefined when no Python project markers");
   });
 });
 
-test("ty: monorepo with multiple packages", async () => {
+test("pyright: monorepo with multiple packages", async () => {
   await withTempDir({
     "pyproject.toml": "[project]\nname = \"monorepo\"",
     "packages/api/pyproject.toml": "[project]\nname = \"api\"",
@@ -652,7 +652,7 @@ test("ty: monorepo with multiple packages", async () => {
     "packages/worker/pyproject.toml": "[project]\nname = \"worker\"",
     "packages/worker/src/tasks.py": "def process(): pass",
   }, async (dir) => {
-    const server = LSP_SERVERS.find(s => s.id === "ty")!;
+    const server = LSP_SERVERS.find(s => s.id === "pyright")!;
     const apiRoot = server.findRoot(join(dir, "packages/api/src/main.py"), dir);
     const workerRoot = server.findRoot(join(dir, "packages/worker/src/tasks.py"), dir);
     assertEquals(apiRoot, join(dir, "packages/api"), "API package should find its pyproject.toml");

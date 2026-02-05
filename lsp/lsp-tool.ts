@@ -11,7 +11,7 @@
  *   - TypeScript/JavaScript (typescript-language-server)
  *   - Vue (vue-language-server)
  *   - Svelte (svelteserver)
- *   - Python (ty language server)
+ *   - Python (pyright-langserver)
  *   - Go (gopls)
  *   - Kotlin (kotlin-ls)
  *   - Swift (sourcekit-lsp)
@@ -24,7 +24,6 @@
  */
 
 import * as path from "node:path";
-import * as fs from "node:fs";
 import { Type, type Static } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -141,7 +140,7 @@ function collectSymbols(symbols: any[], depth = 0, lines: string[] = [], query?:
   return lines;
 }
 
-function formatWorkspaceEdit(edit: any, cwd?: string, applyChanges = false): string {
+function formatWorkspaceEdit(edit: any, cwd?: string): string {
   const lines: string[] = [];
   
   if (edit.documentChanges?.length) {
@@ -150,43 +149,6 @@ function formatWorkspaceEdit(edit: any, cwd?: string, applyChanges = false): str
         const fp = uriToPath(change.textDocument.uri);
         const display = cwd && path.isAbsolute(fp) ? path.relative(cwd, fp) : fp;
         lines.push(`${display}:`);
-        
-        if (applyChanges && fs.existsSync(fp)) {
-          let content = fs.readFileSync(fp, "utf-8");
-          // Apply edits in reverse order to maintain correct positions
-          const sortedEdits = [...(change.edits || [])].sort((a, b) => {
-            // Sort by line descending, then character descending
-            if (b.range.start.line !== a.range.start.line) {
-              return b.range.start.line - a.range.start.line;
-            }
-            return b.range.start.character - a.range.start.character;
-          });
-          
-          for (const e of sortedEdits) {
-            const { line, character } = e.range.start;
-            const { line: endLine, character: endCharacter } = e.range.end;
-            
-            // Convert to character positions
-            const linesArr = content.split('\n');
-            let pos = 0;
-            for (let i = 0; i < line; i++) {
-              pos += linesArr[i].length + 1; // +1 for newline
-            }
-            pos += character;
-            
-            let endPos = 0;
-            for (let i = 0; i < endLine; i++) {
-              endPos += linesArr[i].length + 1; // +1 for newline
-            }
-            endPos += endCharacter;
-            
-            // Apply the edit
-            content = content.substring(0, pos) + e.newText + content.substring(endPos);
-          }
-          
-          fs.writeFileSync(fp, content, "utf-8");
-        }
-        
         for (const e of change.edits || []) {
           const loc = `${e.range.start.line + 1}:${e.range.start.character + 1}`;
           lines.push(`  [${loc}] → "${e.newText}"`);
@@ -200,43 +162,6 @@ function formatWorkspaceEdit(edit: any, cwd?: string, applyChanges = false): str
       const fp = uriToPath(uri);
       const display = cwd && path.isAbsolute(fp) ? path.relative(cwd, fp) : fp;
       lines.push(`${display}:`);
-      
-      if (applyChanges && fs.existsSync(fp)) {
-        let content = fs.readFileSync(fp, "utf-8");
-        // Apply edits in reverse order to maintain correct positions
-        const sortedEdits = [...(edits as any[])].sort((a: any, b: any) => {
-          // Sort by line descending, then character descending
-          if (b.range.start.line !== a.range.start.line) {
-            return b.range.start.line - a.range.start.line;
-          }
-          return b.range.start.character - a.range.start.character;
-        });
-        
-        for (const e of sortedEdits) {
-          const { line, character } = e.range.start;
-          const { line: endLine, character: endCharacter } = e.range.end;
-          
-          // Convert to character positions
-          const linesArr = content.split('\n');
-          let pos = 0;
-          for (let i = 0; i < line; i++) {
-            pos += linesArr[i].length + 1; // +1 for newline
-          }
-          pos += character;
-          
-          let endPos = 0;
-          for (let i = 0; i < endLine; i++) {
-            endPos += linesArr[i].length + 1; // +1 for newline
-          }
-          endPos += endCharacter;
-          
-          // Apply the edit
-          content = content.substring(0, pos) + e.newText + content.substring(endPos);
-        }
-        
-        fs.writeFileSync(fp, content, "utf-8");
-      }
-      
       for (const e of edits as any[]) {
         const loc = `${e.range.start.line + 1}:${e.range.start.character + 1}`;
         lines.push(`  [${loc}] → "${e.newText}"`);
@@ -266,7 +191,7 @@ Actions: definition, references, hover, signature, rename (require file + line/c
 Use bash to find files: find src -name "*.ts" -type f`,
     parameters: LspParams,
 
-    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+    async execute(_toolCallId, params, onUpdate, ctx, signal) {
       if (signal?.aborted) return cancelledToolResult();
       onUpdate?.({ content: [{ type: "text", text: "Working..." }], details: { status: "working" } });
 
@@ -357,7 +282,7 @@ Use bash to find files: find src -name "*.ts" -type f`,
             if (!newName) throw new Error('Action "rename" requires a "newName" parameter.');
             const result = await abortable(manager.rename(file!, rLine!, rCol!, newName), signal);
             if (!result) return { content: [{ type: "text", text: `action: rename\n${qLine}${posLine}No rename available at this position.` }], details: null };
-            const edits = formatWorkspaceEdit(result, ctx?.cwd, true); // Apply changes to files
+            const edits = formatWorkspaceEdit(result, ctx?.cwd);
             return { content: [{ type: "text", text: `action: rename\n${qLine}${posLine}newName: ${newName}\n\n${edits}` }], details: result };
           }
           case "codeAction": {
