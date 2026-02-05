@@ -1,14 +1,13 @@
 {
-  "name": "checkpoint-pi",
+  "name": "token-rate-pi",
   "version": "1.0.2",
-  "description": "Git-based checkpoint extension for pi-coding-agent - creates checkpoints at each turn for code state restoration",
+  "description": "Token rate status extension for pi-coding-agent - shows average output tokens per second",
   "type": "module",
   "scripts": {
-    "test": "npx tsx tests/checkpoint.test.ts"
+    "test": "echo \"No tests yet\""
   },
   "keywords": [
-    "git",
-    "checkpoint",
+    "token-rate",
     "pi-coding-agent",
     "extension",
     "pi-package"
@@ -17,7 +16,7 @@
   "license": "MIT",
   "pi": {
     "extensions": [
-      "./checkpoint.ts"
+      "./token-rate.ts"
     ]
   },
   "devDependencies": {
